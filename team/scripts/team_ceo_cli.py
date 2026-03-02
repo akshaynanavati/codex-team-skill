@@ -86,20 +86,50 @@ def prompt_yes_no(label: str, default: bool = False) -> bool:
         print("Enter y or n.")
 
 
-def prompt_numbered_selection(label: str, total: int) -> int | None:
+def short_id(value: str) -> str:
+    return value[-6:]
+
+
+def render_text(value: object) -> str:
+    return str(value or "").replace("\\n", "\n")
+
+
+def prompt_record_selection(label: str, rows: list[sqlite3.Row], id_key: str) -> int | None:
+    total = len(rows)
     while True:
-        raw = input(f"{label} number (1-{total}, blank to return): ").strip()
+        raw = input(
+            f"{label} selection (1-{total}, full ID, or last 6 chars; blank to return): "
+        ).strip()
         if not raw:
             return None
+
         try:
             selected = int(raw)
         except ValueError:
-            print("Enter a valid number.")
+            selected = None
+        if selected is not None and 1 <= selected <= total:
+            return selected - 1
+
+        full_matches = [
+            index for index, row in enumerate(rows) if str(row[id_key]).strip() == raw
+        ]
+        if len(full_matches) == 1:
+            return full_matches[0]
+        if len(full_matches) > 1:
+            print("Selection is ambiguous. Enter a row number or full ID.")
             continue
-        if selected < 1 or selected > total:
-            print(f"Choose a number between 1 and {total}.")
-            continue
-        return selected - 1
+
+        if len(raw) == 6:
+            suffix_matches = [
+                index for index, row in enumerate(rows) if str(row[id_key]).endswith(raw)
+            ]
+            if len(suffix_matches) == 1:
+                return suffix_matches[0]
+            if len(suffix_matches) > 1:
+                print("That last-6 ID is ambiguous. Enter a row number or full ID.")
+                continue
+
+        print(f"Enter a valid row number, full ID, or last 6 characters of the ID.")
 
 
 def pause() -> None:
@@ -179,18 +209,25 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
     widths = [len(header) for header in headers]
     for row in rows:
         for index, value in enumerate(row):
-            widths[index] = max(widths[index], len(value))
+            widths[index] = max(widths[index], max((len(line) for line in value.splitlines()), default=0))
 
     header_line = " | ".join(header.ljust(widths[index]) for index, header in enumerate(headers))
     separator_line = "-+-".join("-" * width for width in widths)
     print(header_line)
     print(separator_line)
     for row in rows:
-        print(" | ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
-
-
-def short_message_id(message_id: str) -> str:
-    return message_id[-6:]
+        wrapped = [value.splitlines() or [""] for value in row]
+        height = max(len(lines) for lines in wrapped)
+        for line_index in range(height):
+            line_cells = [
+                wrapped[col_index][line_index] if line_index < len(wrapped[col_index]) else ""
+                for col_index in range(len(headers))
+            ]
+            print(
+                " | ".join(
+                    line_cells[index].ljust(widths[index]) for index in range(len(headers))
+                )
+            )
 
 
 def format_timestamp_human(timestamp: str) -> str:
@@ -227,9 +264,9 @@ def show_task_detail(conn: sqlite3.Connection, task_id: str) -> None:
         "updated_at",
         "blocked_reason",
     ):
-        print(f"{key}: {row[key] or ''}")
+        print(f"{key}: {render_text(row[key])}")
     print("body:")
-    print(row["body"])
+    print(render_text(row["body"]))
 
 
 def view_all_tasks(conn: sqlite3.Connection) -> None:
@@ -250,17 +287,17 @@ def view_all_tasks(conn: sqlite3.Connection) -> None:
     table_rows = [
         [
             str(index),
-            row["task_id"],
+            short_id(row["task_id"]),
             row["owner"],
             row["state"],
-            runtime.body_preview(row["body"], 48),
+            runtime.body_preview(render_text(row["body"]), 48),
         ]
         for index, row in enumerate(rows, start=1)
     ]
     print_table(["no", "task_id", "owner", "status", "body_preview"], table_rows)
 
     while rows:
-        selected = prompt_numbered_selection("Task", len(rows))
+        selected = prompt_record_selection("Task", rows, "task_id")
         if selected is None:
             break
         show_task_detail(conn, rows[selected]["task_id"])
@@ -278,20 +315,24 @@ def view_tasks_by_member(conn: sqlite3.Connection, team_root: Path) -> None:
     rows = runtime.query_task_rows(conn, owner=member, state_scope=scope, limit=limit)
     clear_screen()
     print(f"Tasks for {member} (scope={scope}, count={len(rows)})\n")
-    print("no  task_id   state         prio updated_at            body")
-    print("-" * 100)
-    for index, row in enumerate(rows, start=1):
-        print(
-            f"{index:>2}  "
-            f"{row['task_id'][:8]} "
-            f"{row['state'][:12]:<12} "
-            f"{str(row['priority']):>4} "
-            f"{row['updated_at'][:20]:<20} "
-            f"{runtime.body_preview(row['body'], 42)}"
-        )
+    table_rows = [
+        [
+            str(index),
+            short_id(row["task_id"]),
+            row["state"][:12],
+            str(row["priority"]),
+            row["updated_at"][:20],
+            runtime.body_preview(render_text(row["body"]), 42),
+        ]
+        for index, row in enumerate(rows, start=1)
+    ]
+    if table_rows:
+        print_table(["no", "task_id", "state", "prio", "updated_at", "body"], table_rows)
+    else:
+        print("No tasks found.")
 
     while rows:
-        selected = prompt_numbered_selection("Task", len(rows))
+        selected = prompt_record_selection("Task", rows, "task_id")
         if selected is None:
             break
         show_task_detail(conn, rows[selected]["task_id"])
@@ -393,9 +434,9 @@ def print_message_detail(row: sqlite3.Row) -> None:
         "task_id",
         "subject",
     ):
-        print(f"{key}: {row[key] or ''}")
+        print(f"{key}: {render_text(row[key])}")
     print("body:")
-    print(row["body"])
+    print(render_text(row["body"]))
 
 
 def send_ceo_message(
@@ -491,16 +532,16 @@ def unarchive_messages_for_member(conn: sqlite3.Connection, team_root: Path) -> 
         table_rows = [
             [
                 str(index),
-                row["message_id"],
+                short_id(row["message_id"]),
                 row["receiver"],
                 row["status"],
-                runtime.body_preview(row["body"], 48),
+                runtime.body_preview(render_text(row["body"]), 48),
             ]
             for index, row in enumerate(rows, start=1)
         ]
         print_table(["no", "message_id", "owner", "status", "body_preview"], table_rows)
 
-        selected = prompt_numbered_selection("Archived message", len(rows))
+        selected = prompt_record_selection("Archived message", rows, "message_id")
         if selected is None:
             break
 
@@ -555,19 +596,19 @@ def view_all_messages(conn: sqlite3.Connection) -> None:
     table_rows = [
         [
             str(index),
-            short_message_id(row["message_id"]),
+            short_id(row["message_id"]),
             row["sender"],
             row["receiver"],
             format_timestamp_human(row["created_at"]),
             row["status"],
-            runtime.body_preview(row["body"], 48),
+            runtime.body_preview(render_text(row["body"]), 48),
         ]
         for index, row in enumerate(rows, start=1)
     ]
     print_table(["no", "message_id", "from", "to", "timestamp", "status", "body_preview"], table_rows)
 
     while rows:
-        selected = prompt_numbered_selection("Message", len(rows))
+        selected = prompt_record_selection("Message", rows, "message_id")
         if selected is None:
             break
         message = read_message(conn, rows[selected]["message_id"])
@@ -616,10 +657,10 @@ def view_messages(conn: sqlite3.Connection, team_root: Path, default_member: str
     table_rows = [
         [
             str(index),
-            row["message_id"],
+            short_id(row["message_id"]),
             row["receiver"],
             row["status"],
-            runtime.body_preview(row["body"], 48),
+            runtime.body_preview(render_text(row["body"]), 48),
         ]
         for index, row in enumerate(rows, start=1)
     ]
@@ -629,7 +670,7 @@ def view_messages(conn: sqlite3.Connection, team_root: Path, default_member: str
         print("No messages found.")
 
     while rows:
-        selected = prompt_numbered_selection("Message", len(rows))
+        selected = prompt_record_selection("Message", rows, "message_id")
         if selected is None:
             break
         message = read_message(conn, rows[selected]["message_id"])
@@ -675,18 +716,18 @@ def respond_to_message(conn: sqlite3.Connection) -> None:
     table_rows = [
         [
             str(index),
-            short_message_id(row["message_id"]),
+            short_id(row["message_id"]),
             row["sender"],
             row["receiver"],
             format_timestamp_human(row["created_at"]),
             row["status"],
-            runtime.body_preview(row["body"], 48),
+            runtime.body_preview(render_text(row["body"]), 48),
         ]
         for index, row in enumerate(rows, start=1)
     ]
     print_table(["no", "message_id", "from", "to", "timestamp", "status", "body_preview"], table_rows)
 
-    selected = prompt_numbered_selection("Message", len(rows))
+    selected = prompt_record_selection("Message", rows, "message_id")
     if selected is None:
         pause()
         return
