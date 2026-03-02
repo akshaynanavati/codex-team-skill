@@ -1096,7 +1096,7 @@ def read_message(conn: sqlite3.Connection, message_id: str) -> sqlite3.Row | Non
         if row is None:
             return
 
-        if row["status"] == "unread":
+        if row["status"] == "unread" and row["receiver"] == "ceo":
             connection.execute(
                 """
                 UPDATE messages
@@ -1810,7 +1810,7 @@ def respond_to_message(conn: sqlite3.Connection) -> None:
             UPDATE messages
             SET status = CASE WHEN status = 'unread' THEN 'read' ELSE status END,
                 read_at = CASE WHEN status = 'unread' AND read_at IS NULL THEN ? ELSE read_at END
-            WHERE message_id = ?
+            WHERE message_id = ? AND receiver = 'ceo'
             """,
             (read_at, message_id),
         )
