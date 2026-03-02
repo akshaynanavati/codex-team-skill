@@ -30,6 +30,11 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 TASK_SCOPE_CHOICES = ("open", "all", *runtime.TASK_STATES)
 MESSAGE_SCOPE_CHOICES = runtime.MESSAGE_LIST_SCOPES
+TASK_DISPLAY_STATE_ORDER = {
+    "todo": 0,
+    "done": 1,
+    "cancelled": 2,
+}
 
 KEY_UP = "up"
 KEY_DOWN = "down"
@@ -935,6 +940,22 @@ def format_timestamp_human(timestamp: str) -> str:
     return parsed.strftime("%Y-%d-%m %H:%M:%S")
 
 
+def sort_task_rows_for_display(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    def sort_key(row: sqlite3.Row) -> tuple[object, ...]:
+        state = render_text(row["state"]).strip().lower()
+        state_rank = TASK_DISPLAY_STATE_ORDER.get(state, len(TASK_DISPLAY_STATE_ORDER))
+        return (
+            render_text(row["owner"]).strip().lower(),
+            state_rank,
+            state,
+            -int(row["priority"]),
+            render_text(row["created_at"]),
+            render_text(row["task_id"]),
+        )
+
+    return sorted(rows, key=sort_key)
+
+
 def show_task_detail(conn: sqlite3.Connection, task_id: str) -> None:
     row = conn.execute(
         """
@@ -971,7 +992,9 @@ def view_all_tasks(conn: sqlite3.Connection) -> None:
     scope = prompt_scope("Task scope", TASK_SCOPE_CHOICES, "all")
     limit = prompt_int("Limit", 100)
 
-    rows = runtime.query_task_rows(conn, owner=None, state_scope=scope, limit=limit)
+    rows = sort_task_rows_for_display(
+        runtime.query_task_rows(conn, owner=None, state_scope=scope, limit=limit)
+    )
     clear_screen()
     print(f"All tasks (scope={scope}, count={len(rows)})\n")
 
@@ -1017,7 +1040,9 @@ def view_tasks_by_member(conn: sqlite3.Connection, team_root: Path) -> None:
     scope = prompt_scope("Task scope", TASK_SCOPE_CHOICES, "open")
     limit = prompt_int("Limit", 50)
 
-    rows = runtime.query_task_rows(conn, owner=member, state_scope=scope, limit=limit)
+    rows = sort_task_rows_for_display(
+        runtime.query_task_rows(conn, owner=member, state_scope=scope, limit=limit)
+    )
     clear_screen()
     print(f"Tasks for {member} (scope={scope}, count={len(rows)})\n")
     table_rows = [
@@ -1973,7 +1998,9 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
 def screen_task_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
     owner_raw, scope, limit = screen.params
     owner = str(owner_raw) if owner_raw else None
-    rows = runtime.query_task_rows(conn, owner=owner, state_scope=str(scope), limit=int(limit))
+    rows = sort_task_rows_for_display(
+        runtime.query_task_rows(conn, owner=owner, state_scope=str(scope), limit=int(limit))
+    )
     title = (
         f"Tasks for {owner} (scope={scope}, count={len(rows)})"
         if owner
