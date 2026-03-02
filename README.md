@@ -39,6 +39,8 @@ team/
 
 ## Installation
 
+### Option 1: Install via Skill Installer
+
 Install this skill from:
 
 `https://github.com/akshaynanavati/codex-team-skill`
@@ -49,7 +51,20 @@ Run:
 codex exec --skip-git-repo-check 'Use $skill-installer. Install skill from GitHub URL: https://github.com/akshaynanavati/codex-team-skill/tree/main/team'
 ```
 
-After installation, restart Codex so the new skill is loaded.
+### Option 2: Dev Install via Clone + Symlink
+
+Use this if you want Codex to pick up local changes to the skill without reinstalling.
+
+```bash
+git clone 'https://github.com/akshaynanavati/codex-team-skill.git'
+cd 'codex-team-skill'
+mkdir -p "$CODEX_HOME/skills"
+ln -s "$(pwd)"'/team' "$CODEX_HOME/skills/team"
+```
+
+If a `team` skill link already exists, remove it first, then create the symlink again.
+
+After either install option, restart Codex so the skill is loaded or reloaded.
 
 ## How To Interact With This Skill
 
