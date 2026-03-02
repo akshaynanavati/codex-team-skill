@@ -9,25 +9,26 @@ Run exactly one mode per invocation: `create`, `recruit`, `update-run-script`, o
 
 ## Mode Router (Required First Step)
 
-Determine mode before any filesystem write.
+Choose mode before any filesystem write.
 
-- `create`: initialize a new team workspace.
+- `create`: initialize one new team workspace.
 - `recruit`: add one member to an existing team.
-- `update-run-script`: merge the latest template runner into one existing team runner.
+- `update-run-script`: merge latest runner template into one team-local runner.
 - `execute`: run one work round for one member.
 
-If user intent is ambiguous, ask one clarifying question and stop.
+If intent is ambiguous, ask one clarifying question and stop.
 
 ## Global Rules
 
 ### Naming and Paths
 
-- Treat the invocation directory as the default base path.
+- Use the invocation directory as default `--base`.
 - Team path format: `TEAM_<team-name>/`.
 - Member path format: `TEAM_<team-name>/members/<member-name>/`.
 - Reject names containing `/` or `\`.
+- Names should match `^[A-Za-z0-9._-]+$`.
 
-### Bundled Scripts
+### Script Setup
 
 Set script paths first:
 
@@ -39,108 +40,102 @@ export TEAM_CEO_CLI="$CODEX_HOME/skills/team/scripts/team_ceo_cli.py"
 export TEAM_RUNNER_TEMPLATE="$CODEX_HOME/skills/team/scripts/run.py"
 ```
 
-Use setup script for `create` and `recruit`:
+### Script-First Boundary
 
-```bash
-python3 "$TEAM_FS_CLI" --base "<directory>" create --name "<team-name>" --mission "<mission text>"
-python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>" --name "<member-name>" --role "<role text>" [--run-check "<criteria text>"]
-```
+Use scripts for deterministic writes and state transitions.
 
-Use runtime script to initialize message/task state:
+- Team scaffolding and member scaffolding: `team_fs.py`.
+- Message/task state creation and updates: `team_cli.py`.
+- Team scheduling: team-local `TEAM_<name>/run.py` copied from template.
+- Human CEO terminal only: `team_ceo_cli.py`.
 
-```bash
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" init
-```
-
-`$TEAM_CEO_CLI` is for a human CEO terminal session only. Never execute it from an agent run.
+Do not hand-edit SQLite state when an equivalent CLI command exists.
 
 ### Runtime State (SQLite)
 
-- Persist all runtime state in `TEAM_<team-name>/state/team_state.sqlite3`.
-- Expect exactly two core tables:
-  - `messages`: `message_id` (UUID), `sender`, `receiver`, `subject`, `body`, `created_at`, `status` (`unread|read|archived`), `read_at`, `archived_at`, `task_id` (optional UUID reference).
-  - `tasks`: `task_id` (UUID), `owner`, `state` (`todo|in_progress|blocked|done|cancelled`), `body`, `priority`, `created_by`, `created_at`, `updated_at`, `blocked_reason`.
-- Rely on CLI-generated UUIDs only. Never fabricate IDs.
-- Assume concurrent workers. Runtime CLI uses WAL journal mode, busy timeout, and short retrying `BEGIN IMMEDIATE` write transactions.
+- Persist runtime state in `TEAM_<team-name>/state/team_state.sqlite3`.
+- Core tables:
+  - `messages`: `message_id`, `sender`, `receiver`, `subject`, `body`, `created_at`, `status` (`unread|read|archived`), `read_at`, `archived_at`, `task_id` (optional).
+  - `tasks`: `task_id`, `owner`, `state` (`todo|in_progress|blocked|done|cancelled`), `body`, `priority`, `created_by`, `created_at`, `updated_at`, `blocked_reason`.
+- Never fabricate UUIDs; use CLI-generated IDs only.
+- Assume concurrent workers; runtime CLI handles WAL mode, busy timeout, and retrying write transactions.
 
 ### Access Constraints
 
-- Allow a member to list/read/archive only their own inbox messages using `--member <active-member>`.
-- Disallow reading any other member's inbox.
-- Disallow reading CEO inbox in normal member runs; allow sending to CEO (`--receiver ceo`) for escalation.
+- Member runs may list/read/archive only that member's inbox using `--member <active-member>`.
+- Never read another member's inbox in a member run.
+- Never read CEO inbox in normal member runs.
+- Sending to CEO is allowed (`--receiver ceo`) for escalations.
 - Never run `team_ceo_cli.py` from an agent invocation.
 
 ### CEO Console (Human Only)
 
-Use only in a direct human terminal:
+Human terminal usage:
 
 ```bash
 python3 "$TEAM_CEO_CLI" --base "<directory>" --team "<team-name-or-path>"
-```
-
-Preferred for a specific team after bootstrap:
-
-```bash
 ./TEAM_<name>/ceo [extra flags]
 ```
 
-Capabilities:
-
-- View tasks filtered by member.
-- View all tasks in a one-row-per-task table with numbered selection and task detail drill-down.
-- View all messages in a one-row-per-message table with numbered selection and message detail drill-down.
-- View messages for any member inbox.
-- View CEO inbox quickly.
-- Prompt whether to archive a message immediately after opening it in the CEO console.
-- Unarchive archived member messages on behalf of members from the CEO console.
-- Send CEO replies to message senders.
-- Send new CEO messages directly to a member inbox.
-- Select displayed tasks/messages by row number (instead of UUID) to open details.
+The CEO console is the human interface for browsing tasks/messages (including member and CEO inboxes), unarchiving member messages, and sending replies/new CEO messages.
 
 ## Mode: Create
 
 Use only when asked to create a team.
 
-Create this structure:
+Run:
+
+```bash
+python3 "$TEAM_FS_CLI" --base "<directory>" create --name "<team-name>" --mission "<mission text>"
+```
+
+Resulting structure:
 
 - `TEAM_<name>/`
 - `TEAM_<name>/members/`
 - `TEAM_<name>/state/`
 - `TEAM_<name>/mission.md`
-- `TEAM_<name>/ceo` (team-scoped CEO CLI wrapper; forwards extra flags)
-- `TEAM_<name>/run.py` (team-scoped member scheduler; copied from `$TEAM_RUNNER_TEMPLATE`)
+- `TEAM_<name>/ceo`
+- `TEAM_<name>/run.py`
 
-Write `mission.md` with user-provided mission text. If missing, write a short placeholder and ask for mission details.
+Rules:
 
-Initialize runtime DB schema:
+- Write `mission.md` from provided mission text.
+- If mission is missing, write a short placeholder and ask for mission details.
+- Initialize runtime DB schema:
 
 ```bash
 python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<name-or-path>" init
 ```
 
-- Create flow writes executable wrapper `TEAM_<name>/ceo` that binds `--team` to that team and forwards all additional flags to `$TEAM_CEO_CLI`.
-- Create flow copies `TEAM_<name>/run.py` from `$TEAM_RUNNER_TEMPLATE` for team-specific scheduling customization.
-
-Do not recruit members in this mode.
+- `create` writes executable `TEAM_<name>/ceo` wrapper bound to that team.
+- `create` copies `TEAM_<name>/run.py` from `$TEAM_RUNNER_TEMPLATE`.
+- Do not recruit members in this mode.
 
 ## Mode: Recruit
 
 Use only when asked to recruit one member.
 
-Preconditions:
+Precondition: team directory exists.
 
-- Team directory exists.
+Run:
 
-Create this member structure:
+```bash
+python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>" --name "<member-name>" --role "<role text>" [--run-check "<criteria text>"]
+```
+
+Resulting member structure:
 
 - `members/<member-name>/`
 - `members/<member-name>/ROLE.md`
 - `members/<member-name>/context/`
 
-Write `ROLE.md` with exact user-provided role text. If missing, write a short placeholder and ask for role details.
-If custom run criteria is provided at recruit time, pass `--run-check "<criteria>"` so the team-local `run.py` is updated with a member-specific check stub.
+Rules:
 
-Do not create or edit other members in this mode.
+- Write `ROLE.md` exactly from provided role text.
+- If role text is missing, write a short placeholder and ask for role details.
+- If custom run criteria is provided, pass `--run-check` to inject a member-specific stub into team-local `run.py`.
+- Do not create or edit other members in this mode.
 
 ## Mode: Update Run Script
 
@@ -154,36 +149,36 @@ Preconditions:
 
 Required sequence:
 
-1. Resolve paths and snapshot files.
-- Local runner (team copy): `TEAM_<name>/run.py`.
-- Template runner (script dir copy): `$TEAM_RUNNER_TEMPLATE`.
-- Create a backup of local runner before editing.
+1. Resolve paths and create a backup of local runner.
+- Local: `TEAM_<name>/run.py`
+- Template: `$TEAM_RUNNER_TEMPLATE`
 
-2. Diff template vs local runner and classify each change hunk.
-- Additions-only in template: template introduces new lines/blocks without removing local lines.
-- Additions and deletions in template with no overlap against local custom behavior.
-- Conflicting edits: template changes overlap local custom behavior in the same logical block.
+2. Diff template vs local and classify hunks.
+- Additions-only in template.
+- Additions+deletions in template with no overlap against local custom behavior.
+- Conflicting edits where template changes overlap local custom behavior.
 
-3. Apply changes by class.
-- Additions-only: apply all template additions to local runner; keep existing local lines.
-- Additions and deletions, non-conflicting: apply both additions and deletions so local runner picks up latest template behavior in those sections.
-- Conflicting edits: perform a manual merge. First align local runner to the latest template structure, then re-apply local behavior from the pre-update backup so local intent is preserved on top of latest template changes.
+3. Apply by class.
+- Additions-only: apply additions, keep local lines.
+- Non-conflicting additions+deletions: apply both so local picks up latest template behavior.
+- Conflicts: manual merge. First align to latest template structure, then re-apply local behavior from backup.
 
 4. Validate and finalize.
-- Keep the file executable (`chmod +x TEAM_<name>/run.py`).
-- Preserve `# TEAM_RUN_CUSTOM_CHECKS` marker and existing member-specific registrations unless intentionally removed.
-- Verify syntax before finishing: `python3 -m py_compile "TEAM_<name>/run.py"`.
-- Verify runtime wiring with a dry run: `python3 "./TEAM_<name>/run.py" --dry-run`.
+- Keep executable bit: `chmod +x TEAM_<name>/run.py`.
+- Preserve `# TEAM_RUN_CUSTOM_CHECKS` and existing member registrations unless intentionally removed.
+- Validate syntax: `python3 -m py_compile "TEAM_<name>/run.py"`.
+- Validate wiring: `python3 "./TEAM_<name>/run.py" --dry-run`.
 
 Hard constraints:
 
 - Edit only `TEAM_<name>/run.py` in this mode.
-- Never silently drop local custom logic. If a merge decision is uncertain, prefer preserving local behavior and call out the decision.
-- Run exactly this mode only.
+- Never silently drop local custom logic.
+- If merge choice is uncertain, preserve local behavior and call out the decision.
+- Execute this mode only.
 
 ## Team Runner (`TEAM_<name>/run.py`)
 
-Use this script to run all members that currently need a work round:
+Use the runner for scheduler-style execution:
 
 ```bash
 python3 "./TEAM_<name>/run.py"
@@ -192,19 +187,24 @@ python3 "./TEAM_<name>/run.py" --model "gpt-5.3-codex" --reasoning-effort medium
 python3 "./TEAM_<name>/run.py" --sequential
 ```
 
-For every non-dry-run member execution, append the current UTC timestamp as a new line in `members/<member>/.run`.
-`--rounds` defaults to `1`. In each round, evaluate run criteria first, then run runnable members. By default, runs launch concurrently (at most one active invocation per member), then wait for all runnable members to finish before starting the next round. With `--sequential`, run members one at a time in scheduler order.
-Before evaluating members in each round, the runner checks unread CEO inbox messages (`receiver = ceo`, `status = unread`). If any exist, pause and prompt the human to address CEO inbox messages; re-check only after human confirmation.
-Use project root (the parent directory of `TEAM_<name>/`) as the Codex working directory for member runs.
-`--model` defaults to `gpt-5.3-codex` and `--reasoning-effort` defaults to `medium`.
+Semantics:
 
-Default run criteria per member:
+- For every non-dry-run member execution, append current UTC timestamp to `members/<member>/.run`.
+- `--rounds` default is `1`.
+- Each round evaluates run criteria first, then runs runnable members.
+- Default is concurrent runs with per-round barrier before next round.
+- `--sequential` runs members one at a time.
+- Before each round, runner checks unread CEO inbox messages (`receiver = ceo`, `status = unread`). If any exist, pause for human handling and re-check after confirmation.
+- Member runs use project root (parent of `TEAM_<name>/`) as Codex working directory.
+- Defaults: `--model gpt-5.3-codex`, `--reasoning-effort medium`.
 
-- At least one unread message in `messages` (`status = unread`) for that member.
-- Or at least one actionable task in `tasks` (`state IN (todo, in_progress)`) for that member.
+Default per-member run criteria:
 
-Customize per team by editing `TEAM_<name>/run.py` directly.
-For member-specific criteria introduced during recruit, use `--run-check` to inject a check stub for that member, then refine the generated function.
+- At least one unread message for that member, or
+- At least one actionable task (`todo` or `in_progress`) for that member.
+
+Customize team criteria by editing `TEAM_<name>/run.py`.
+For member-specific criteria at recruit time, use `--run-check` then refine the generated stub.
 
 ## Mode: Execute
 
@@ -219,58 +219,56 @@ Preconditions:
 
 Execute this sequence each run:
 
-0. Setup:
-- Append current UTC timestamp to `members/<member>/.run` (create file if missing).
+0. Setup
+- Append current UTC timestamp to `members/<member>/.run` (create file if needed).
 - Load and follow `mission.md`.
 - Load and follow `ROLE.md` exactly as written.
 - Load only relevant markdown files from `context/`.
 
-1. Phase 1 - Task Completion:
-- List open tasks for the active member.
-- Prioritize completing existing `in_progress` tasks before starting any new task.
-- If there are no `in_progress` tasks, select the next highest-priority task(s).
-- If multiple tasks are tightly related and can be completed together in one coherent effort, execute them in the same run.
-- Do not pick up multiple unrelated tasks in the same run.
-- Minimize the number of tasks left in `in_progress`; prefer pushing started work to `done` or `blocked`.
-- If a selected task is ambiguous, conflicting, or not currently completable, escalate to `ceo` and set that task to `blocked` with a reason.
+1. Phase 1: Task Completion
+- List open tasks for active member.
+- Prioritize existing `in_progress` tasks before starting new tasks.
+- If none are `in_progress`, select highest-priority next task(s).
+- If tasks are tightly related, complete them together in one coherent effort.
+- Do not execute multiple unrelated tasks in one run.
+- Minimize leftover `in_progress` tasks.
+- If selected task is ambiguous/conflicting/not completable, escalate to CEO and set it `blocked` with reason.
 
-2. Phase 2 - Message Processing:
-- List unarchived inbox messages for the active member and process unread first.
-- Read each message by `message_id`, then process every message until inbox work for this run is actioned.
-- If an action item is quick, do it immediately in this phase.
-- If an action item is not quick, create one or more concrete tasks and include the source `message_id` for traceability.
-- Archive a message only when it is fully actioned now, or when created tasks fully cover required follow-up.
-- If a message requires a response, send the response now; if response must occur later, record that requirement explicitly in the relevant task.
-- Do not leave messages awaiting expected teammate response without either replying or creating explicit response-tracking work.
+2. Phase 2: Message Processing
+- List unarchived inbox messages for active member; process unread first.
+- Read by `message_id` and action all inbox work for this run.
+- Complete quick actions immediately.
+- For non-quick actions, create concrete tasks and include source `message_id` for traceability.
+- Archive only when fully actioned now, or when created tasks fully cover follow-up.
+- If response is required, send it now.
+- If response must happen later, capture that obligation explicitly in task state.
 
-3. Phase 3 - Prioritization:
-- Review all tasks for the active member (`todo`, `in_progress`, and `blocked`).
-- Cancel tasks that are no longer relevant, with a reason.
-- Merge duplicate tasks and preserve traceability in the surviving task text.
+3. Phase 3: Prioritization
+- Review all member tasks (`todo`, `in_progress`, `blocked`).
+- Cancel stale tasks with reason.
+- Merge duplicate tasks and preserve traceability in remaining task text.
 - Split large tasks into smaller, concrete, single-purpose tasks.
-- Re-assign priority across the current full task set every run, even if tasks already have priorities.
+- Reassign priority across full task set each run.
 
-4. Close-out:
-- Update or clean up member context files.
-- Write a short run summary to `state/<member>-last-run.md` with timestamp, handled `task_id`/`task_id`s, and blockers/escalations.
+4. Close-out
+- Update/clean member context files.
+- Write short summary to `state/<member>-last-run.md` with timestamp, handled task IDs, and blockers/escalations.
 
 Hard constraints:
 
-- Run phases in order: Task Completion, Message Processing, then Prioritization.
-- Never archive a message with actionable work unless that work is fully completed now or represented by corresponding task records.
-- Prefer many small tasks over one large task; keep each task single-purpose and self-contained.
-- Prioritize finishing `in_progress` work before starting new work.
-- Do not execute multiple unrelated tasks in one run.
-- Ensure teammates receive required responses; if not immediate, capture the response obligation in task state.
+- Run phases in order: Task Completion -> Message Processing -> Prioritization.
+- Never archive actionable work unless completed now or represented by task records.
+- Prefer many small single-purpose tasks over one large task.
+- Prioritize finishing `in_progress` before starting unrelated new work.
 - Keep actions mission-aligned.
-- If mission and role conflict, escalate to CEO and mark chosen task blocked.
-- If runtime CLI is missing or unavailable, report blocker; never fabricate message/task state.
+- If mission and role conflict, escalate to CEO and mark selected task `blocked`.
+- If runtime CLI is unavailable, report blocker and never fabricate state.
 - Never read messages not addressed to active member.
 - Never modify task state for another member.
 
 ## Runtime CLI Commands
 
-Command patterns:
+Initialization:
 
 ```bash
 python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" init
@@ -300,7 +298,7 @@ python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" ta
 
 ## IDs and Traceability
 
-- Preserve message IDs and task IDs exactly as generated by runtime CLI.
+- Preserve `message_id` and `task_id` exactly as generated.
 - Include relevant IDs in replies, task updates, and escalations.
 - Include `task_id` in escalation messages when escalation is task-driven.
 
