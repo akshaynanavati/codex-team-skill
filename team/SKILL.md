@@ -1,11 +1,11 @@
 ---
 name: team
-description: "Create and operate filesystem-based teams in exactly one mode per run: (1) create a team workspace, (2) recruit a member, or (3) execute one work round for a specific member. Use when asked to initialize `TEAM_<name>/` with `members/`, `state/`, and `mission.md`, add `members/<name>/ROLE.md` plus `context/`, or run a mission-aligned member cycle with strict message isolation and SQLite-backed message/task state through the bundled team CLI."
+description: "Create and operate filesystem-based teams in exactly one mode per run: (1) create a team workspace, (2) recruit a member, (3) update a team-local runner from the latest template while preserving local customizations, or (4) execute one work round for a specific member. Use when asked to initialize `TEAM_<name>/` with `members/`, `state/`, and `mission.md`, add `members/<name>/ROLE.md` plus `context/`, refresh `TEAM_<name>/run.py` from `skills/team/scripts/run.py`, or run a mission-aligned member cycle with strict message isolation and SQLite-backed message/task state through the bundled team CLI."
 ---
 
 # Team
 
-Run exactly one mode per invocation: `create`, `recruit`, or `execute`.
+Run exactly one mode per invocation: `create`, `recruit`, `update-run-script`, or `execute`.
 
 ## Mode Router (Required First Step)
 
@@ -13,6 +13,7 @@ Determine mode before any filesystem write.
 
 - `create`: initialize a new team workspace.
 - `recruit`: add one member to an existing team.
+- `update-run-script`: merge the latest template runner into one existing team runner.
 - `execute`: run one work round for one member.
 
 If user intent is ambiguous, ask one clarifying question and stop.
@@ -140,6 +141,45 @@ Write `ROLE.md` with exact user-provided role text. If missing, write a short pl
 If custom run criteria is provided at recruit time, pass `--run-check "<criteria>"` so the team-local `run.py` is updated with a member-specific check stub.
 
 Do not create or edit other members in this mode.
+
+## Mode: Update Run Script
+
+Use only when asked to update one team-local runner from the latest template.
+
+Preconditions:
+
+- Team directory exists.
+- `TEAM_<name>/run.py` exists.
+- `$TEAM_RUNNER_TEMPLATE` exists and points to `skills/team/scripts/run.py`.
+
+Required sequence:
+
+1. Resolve paths and snapshot files.
+- Local runner (team copy): `TEAM_<name>/run.py`.
+- Template runner (script dir copy): `$TEAM_RUNNER_TEMPLATE`.
+- Create a backup of local runner before editing.
+
+2. Diff template vs local runner and classify each change hunk.
+- Additions-only in template: template introduces new lines/blocks without removing local lines.
+- Additions and deletions in template with no overlap against local custom behavior.
+- Conflicting edits: template changes overlap local custom behavior in the same logical block.
+
+3. Apply changes by class.
+- Additions-only: apply all template additions to local runner; keep existing local lines.
+- Additions and deletions, non-conflicting: apply both additions and deletions so local runner picks up latest template behavior in those sections.
+- Conflicting edits: perform a manual merge. First align local runner to the latest template structure, then re-apply local behavior from the pre-update backup so local intent is preserved on top of latest template changes.
+
+4. Validate and finalize.
+- Keep the file executable (`chmod +x TEAM_<name>/run.py`).
+- Preserve `# TEAM_RUN_CUSTOM_CHECKS` marker and existing member-specific registrations unless intentionally removed.
+- Verify syntax before finishing: `python3 -m py_compile "TEAM_<name>/run.py"`.
+- Verify runtime wiring with a dry run: `python3 "./TEAM_<name>/run.py" --dry-run`.
+
+Hard constraints:
+
+- Edit only `TEAM_<name>/run.py` in this mode.
+- Never silently drop local custom logic. If a merge decision is uncertain, prefer preserving local behavior and call out the decision.
+- Run exactly this mode only.
 
 ## Team Runner (`TEAM_<name>/run.py`)
 

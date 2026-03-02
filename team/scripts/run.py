@@ -21,6 +21,8 @@ from typing import Callable
 VALID_MEMBER = re.compile(r"^[A-Za-z0-9._-]+$")
 DB_FILENAME = "team_state.sqlite3"
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
+CEO_UNREAD_PREVIEW_LIMIT = 10
+MESSAGE_BODY_PREVIEW_WIDTH = 96
 
 ShouldRunCheck = Callable[[sqlite3.Connection, str, Path], tuple[bool, str]]
 
@@ -112,6 +114,58 @@ def count_unread_messages(conn: sqlite3.Connection, member: str) -> int:
     return int(row["c"]) if row is not None else 0
 
 
+def preview_text(text: str, width: int) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= width:
+        return cleaned
+    if width <= 3:
+        return cleaned[:width]
+    return f"{cleaned[: width - 3]}..."
+
+
+def list_unread_messages(
+    conn: sqlite3.Connection,
+    member: str,
+    *,
+    limit: int,
+) -> list[sqlite3.Row]:
+    rows = conn.execute(
+        """
+        SELECT message_id, sender, subject, body, created_at, task_id
+        FROM messages
+        WHERE receiver = ? AND status = 'unread'
+        ORDER BY created_at DESC, message_id ASC
+        LIMIT ?
+        """,
+        (member, limit),
+    ).fetchall()
+    return list(rows)
+
+
+def print_unread_message_preview(
+    unread_count: int,
+    rows: list[sqlite3.Row],
+) -> None:
+    print("        Unread CEO messages:")
+    for row in rows:
+        message_id = str(row["message_id"])
+        sender = str(row["sender"])
+        created_at = str(row["created_at"])
+        subject_raw = str(row["subject"] or "").strip()
+        body_raw = str(row["body"] or "")
+        subject = preview_text(subject_raw, 80) if subject_raw else "(no subject)"
+        body = preview_text(body_raw, MESSAGE_BODY_PREVIEW_WIDTH)
+        task_id = str(row["task_id"] or "").strip()
+        task_link = f" task={task_id}" if task_id else ""
+        print(f"        - {message_id} from {sender} at {created_at}{task_link}")
+        print(f"          subject: {subject}")
+        print(f"          body: {body}")
+
+    remaining = unread_count - len(rows)
+    if remaining > 0:
+        print(f"        ... and {remaining} more unread CEO message(s).")
+
+
 def wait_for_ceo_inbox_clear(
     conn: sqlite3.Connection,
     team_root: Path,
@@ -127,6 +181,13 @@ def wait_for_ceo_inbox_clear(
             f"[PAUSE] round={round_number}/{total_rounds} blocked: "
             f"CEO has {unread_ceo} unread message(s)."
         )
+        try:
+            unread_rows = list_unread_messages(conn, "ceo", limit=CEO_UNREAD_PREVIEW_LIMIT)
+        except sqlite3.Error as exc:
+            unread_rows = []
+            print(f"[WARN] unable to list unread CEO messages: {exc}", file=sys.stderr)
+        else:
+            print_unread_message_preview(unread_ceo, unread_rows)
         print(
             f"        Address CEO inbox first (hint: {team_root / 'ceo'} inbox), "
             "then press Enter to re-check."
@@ -536,7 +597,11 @@ def main() -> int:
                 )
 
             if runnable_count == 0:
-                print(f"[ROUND] {round_number}/{args.rounds} no runnable members.")
+                print(
+                    f"[ROUND] {round_number}/{args.rounds} "
+                    "no members eligible to run; ending remaining rounds early."
+                )
+                stop_after_round = True
 
             if not args.sequential:
                 # Barrier: wait for all launched member runs in this round before
