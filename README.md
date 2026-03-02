@@ -65,7 +65,7 @@ In normal usage, you should not need to call the Python scripts manually.
 ### 1) Create a Team (via Codex)
 
 ```bash
-codex exec "Use $team in create mode. Create team 'demo' with mission: Ship reliable weekly customer reporting."
+codex exec 'Use $team in create mode. Create team demo with mission: Ship reliable weekly customer reporting.'
 ```
 
 This creates:
@@ -83,8 +83,8 @@ You can also do this from an interactive Codex chat by saying:
 ### 2) Recruit Teammates (via Codex)
 
 ```bash
-codex exec "Use $team in recruit mode. Recruit member 'analyst' into team 'demo' with role: Own KPI analysis, investigate anomalies, and escalate blockers quickly."
-codex exec "Use $team in recruit mode. Recruit member 'pm' into team 'demo' with role: Prioritize work, resolve dependencies, and report progress to CEO."
+codex exec 'Use $team in recruit mode. Recruit member analyst into team demo with role: Own KPI analysis, investigate anomalies, and escalate blockers quickly.'
+codex exec 'Use $team in recruit mode. Recruit member pm into team demo with role: Prioritize work, resolve dependencies, and report progress to CEO.'
 ```
 
 This creates one folder per member:
@@ -99,7 +99,7 @@ This creates one folder per member:
 Run one member round:
 
 ```bash
-codex exec "Use $team in execute mode. Execute one work round for member 'analyst' in team 'demo'."
+codex exec 'Use $team in execute mode. Execute one work round for member analyst in team demo.'
 ```
 
 Run all runnable members with the team scheduler:
@@ -181,7 +181,7 @@ This example creates one team with four members (max shown here), then runs and 
 ### 1) Create the Team
 
 ```bash
-codex exec "Use $team in create mode. Create team 'launch_ops' with mission: Plan and execute a reliable product launch with clear ownership, fast escalation, and weekly reporting."
+codex exec 'Use $team in create mode. Create team launch_ops with mission: Plan and execute a reliable product launch with clear ownership, fast escalation, and weekly reporting.'
 ```
 
 What this does:
@@ -192,10 +192,10 @@ What this does:
 ### 2) Recruit Four Members (via Codex)
 
 ```bash
-codex exec "Use $team in recruit mode. Recruit member 'pm' into team 'launch_ops' with role: Own launch plan, prioritize work, and coordinate dependencies across all members."
-codex exec "Use $team in recruit mode. Recruit member 'analyst' into team 'launch_ops' with role: Track launch metrics, investigate anomalies, and escalate blockers to CEO quickly."
-codex exec "Use $team in recruit mode. Recruit member 'engineer' into team 'launch_ops' with role: Deliver technical launch work, report risks early, and keep task state current."
-codex exec "Use $team in recruit mode. Recruit member 'qa' into team 'launch_ops' with role: Validate release quality, triage defects, and escalate release-stopping issues immediately."
+codex exec 'Use $team in recruit mode. Recruit member pm into team launch_ops with role: Own launch plan, prioritize work, and coordinate dependencies across all members.'
+codex exec 'Use $team in recruit mode. Recruit member analyst into team launch_ops with role: Track launch metrics, investigate anomalies, and escalate blockers to CEO quickly.'
+codex exec 'Use $team in recruit mode. Recruit member engineer into team launch_ops with role: Deliver technical launch work, report risks early, and keep task state current.'
+codex exec 'Use $team in recruit mode. Recruit member qa into team launch_ops with role: Validate release quality, triage defects, and escalate release-stopping issues immediately.'
 ```
 
 What this does:
@@ -283,14 +283,14 @@ python3 scripts/team_cli.py --base <dir> --team <team> init
 Create team and recruit members:
 
 ```bash
-python3 scripts/team_fs.py --base <dir> create --name <team-name> --mission "<mission>"
-python3 scripts/team_fs.py --base <dir> recruit --team <team-name-or-path> --name <member-name> --role "<role>"
+python3 scripts/team_fs.py --base <dir> create --name <team-name> --mission '<mission>'
+python3 scripts/team_fs.py --base <dir> recruit --team <team-name-or-path> --name <member-name> --role '<role>'
 ```
 
 Messages:
 
 ```bash
-python3 scripts/team_cli.py --base <dir> --team <team> message send --sender <sender> --receiver <receiver> --body "<text>" [--subject "<subject>"] [--task-id <uuid>]
+python3 scripts/team_cli.py --base <dir> --team <team> message send --sender <sender> --receiver <receiver> --body '<text>' [--subject '<subject>'] [--task-id <uuid>]
 python3 scripts/team_cli.py --base <dir> --team <team> message list --member <member> [--status inbox|unread|read|archived|all]
 python3 scripts/team_cli.py --base <dir> --team <team> message read --member <member> --message-id <uuid>
 python3 scripts/team_cli.py --base <dir> --team <team> message archive --member <member> --message-id <uuid>
@@ -300,10 +300,10 @@ python3 scripts/team_cli.py --base <dir> --team <team> message list-archived --m
 Tasks:
 
 ```bash
-python3 scripts/team_cli.py --base <dir> --team <team> task create --owner <member> --body "<task>" [--priority <int>] [--created-by <actor>]
+python3 scripts/team_cli.py --base <dir> --team <team> task create --owner <member> --body '<task>' [--priority <int>] [--created-by <actor>]
 python3 scripts/team_cli.py --base <dir> --team <team> task list [--owner <member>] [--state open|all|todo|in_progress|blocked|done|cancelled]
 python3 scripts/team_cli.py --base <dir> --team <team> task show --task-id <uuid>
-python3 scripts/team_cli.py --base <dir> --team <team> task update-state --task-id <uuid> --state <state> [--reason "<reason>"]
+python3 scripts/team_cli.py --base <dir> --team <team> task update-state --task-id <uuid> --state <state> [--reason '<reason>']
 ```
 
 Use `--json` on `team_cli.py` commands for machine-readable output while debugging.
