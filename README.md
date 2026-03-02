@@ -131,6 +131,7 @@ Useful options:
 python3 TEAM_demo/run.py --dry-run
 python3 TEAM_demo/run.py --rounds 3
 python3 TEAM_demo/run.py --member analyst --sequential
+python3 TEAM_demo/run.py --ignore-ceo-messages
 ```
 
 ## CEO CLI (Human-Only)
@@ -193,7 +194,7 @@ Escalation flow:
 
 1. A member escalates by sending a message to receiver `ceo` (usually during execute mode when blocked/ambiguous).
 2. Before each `run.py` scheduler round, unread CEO messages are checked.
-3. If unread CEO messages exist, scheduler pauses and prompts for human intervention.
+3. If unread CEO messages exist, scheduler pauses and prompts for human intervention by default.
 4. CEO uses `./TEAM_<name>/ceo` (options `5` and `6`) to review and respond.
 5. Once CEO unread count is cleared, scheduler can continue.
 
@@ -201,6 +202,7 @@ Notes:
 
 - The scheduler gate checks `unread` only. Reading a CEO message clears the unread state; archiving is optional.
 - In non-interactive runs, the gate cannot prompt and the scheduler exits with failure until the CEO inbox is handled.
+- To bypass this gate for a run, pass `--ignore-ceo-messages` to `run.py`.
 
 ## Complete Example: Build and Operate a 4-Member Team
 
@@ -277,6 +279,12 @@ If `run.py` pauses because CEO has unread messages:
 2. Choose `5) View CEO inbox` and open unread messages.
 3. Choose `6) Respond to a message` when a reply is needed.
 4. Return to the paused runner and continue.
+
+If you intentionally want rounds to continue without waiting on CEO inbox, run with:
+
+```bash
+python3 TEAM_launch_ops/run.py --ignore-ceo-messages
+```
 
 ### 7) Ongoing Management Commands
 

@@ -171,10 +171,20 @@ def wait_for_ceo_inbox_clear(
     team_root: Path,
     round_number: int,
     total_rounds: int,
+    *,
+    ignore_ceo_messages: bool,
 ) -> bool:
     while True:
         unread_ceo = count_unread_messages(conn, "ceo")
         if unread_ceo == 0:
+            return True
+
+        if ignore_ceo_messages:
+            print(
+                f"[WARN] round={round_number}/{total_rounds} continuing: "
+                f"CEO has {unread_ceo} unread message(s) "
+                "(enabled by --ignore-ceo-messages)."
+            )
             return True
 
         print(
@@ -192,6 +202,7 @@ def wait_for_ceo_inbox_clear(
             f"        Address CEO inbox first (hint: {team_root / 'ceo'} inbox), "
             "then press Enter to re-check."
         )
+        print("        To continue without this gate, re-run with --ignore-ceo-messages.")
 
         if not sys.stdin.isatty():
             print(
@@ -359,6 +370,14 @@ def parse_args() -> argparse.Namespace:
         help="Run runnable members one at a time instead of concurrently.",
     )
     parser.add_argument(
+        "--ignore-ceo-messages",
+        action="store_true",
+        help=(
+            "Continue rounds even when CEO has unread inbox messages "
+            "(default: gate on unread CEO messages)."
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Emit final summary as JSON.",
@@ -428,7 +447,17 @@ def main() -> int:
             # Reset any active transaction so each round sees fresh runtime state.
             conn.commit()
             print(f"[ROUND] {round_number}/{args.rounds}")
-            if not wait_for_ceo_inbox_clear(conn, team_root, round_number, args.rounds):
+            if not wait_for_ceo_inbox_clear(
+                conn,
+                team_root,
+                round_number,
+                args.rounds,
+                ignore_ceo_messages=args.ignore_ceo_messages,
+            ):
+                print(
+                    "[HINT] Re-run with --ignore-ceo-messages to continue rounds "
+                    "even when CEO has unread messages."
+                )
                 summary["failed"].append(
                     {
                         "round": round_number,
