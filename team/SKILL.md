@@ -1,11 +1,11 @@
 ---
 name: team
-description: "Create and operate filesystem-based teams in exactly one mode per run: (1) create a team workspace, (2) recruit a member, (3) update a team-local runner from the latest template while preserving local customizations, or (4) execute one work round for a specific member. Use when asked to initialize `TEAM_<name>/` with `members/`, `state/`, and `mission.md`, add `members/<name>/ROLE.md` plus `context/`, refresh `TEAM_<name>/run.py` from `skills/team/scripts/run.py`, or run a mission-aligned member cycle with strict message isolation and SQLite-backed message/task state through the bundled team CLI."
+description: "Create and operate filesystem-based teams in exactly one mode per run: (1) create a team workspace, (2) recruit a member, or (3) execute one work round for a specific member. Use when asked to initialize `TEAM_<name>/` with `members/`, `state/`, and `mission.md`, add `members/<name>/ROLE.md` plus `context/`, or run a mission-aligned member cycle with strict message isolation and SQLite-backed message/task state through the bundled team CLI."
 ---
 
 # Team
 
-Run exactly one mode per invocation: `create`, `recruit`, `update-run-script`, or `execute`.
+Run exactly one mode per invocation: `create`, `recruit`, or `execute`.
 
 ## Mode Router (Required First Step)
 
@@ -13,7 +13,6 @@ Choose mode before any filesystem write.
 
 - `create`: initialize one new team workspace.
 - `recruit`: add one member to an existing team.
-- `update-run-script`: merge latest runner template into one team-local runner.
 - `execute`: run one work round for one member.
 
 If intent is ambiguous, ask one clarifying question and stop.
@@ -37,7 +36,6 @@ export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 export TEAM_FS_CLI="$CODEX_HOME/skills/team/scripts/team_fs.py"
 export TEAM_RUNTIME_CLI="$CODEX_HOME/skills/team/scripts/team_cli.py"
 export TEAM_CEO_CLI="$CODEX_HOME/skills/team/scripts/team_ceo_cli.py"
-export TEAM_RUNNER_TEMPLATE="$CODEX_HOME/skills/team/scripts/run.py"
 ```
 
 ### Script-First Boundary
@@ -46,7 +44,6 @@ Use scripts for deterministic writes and state transitions.
 
 - Team scaffolding and member scaffolding: `team_fs.py`.
 - Message/task state creation and updates: `team_cli.py`.
-- Team scheduling: team-local `TEAM_<name>/run.py` copied from template.
 - Human CEO terminal only: `team_ceo_cli.py`.
 
 Do not hand-edit SQLite state when an equivalent CLI command exists.
@@ -96,7 +93,6 @@ Resulting structure:
 - `TEAM_<name>/state/`
 - `TEAM_<name>/mission.md`
 - `TEAM_<name>/ceo`
-- `TEAM_<name>/run.py`
 
 Rules:
 
@@ -109,7 +105,6 @@ python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<name-or-path>" init
 ```
 
 - `create` writes executable `TEAM_<name>/ceo` wrapper bound to that team.
-- `create` copies `TEAM_<name>/run.py` from `$TEAM_RUNNER_TEMPLATE`.
 - Do not recruit members in this mode.
 
 ## Mode: Recruit
@@ -121,7 +116,7 @@ Precondition: team directory exists.
 Run:
 
 ```bash
-python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>" --name "<member-name>" --role "<role text>" [--run-check "<criteria text>"]
+python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>" --name "<member-name>" --role "<role text>"
 ```
 
 Resulting member structure:
@@ -134,77 +129,7 @@ Rules:
 
 - Write `ROLE.md` exactly from provided role text.
 - If role text is missing, write a short placeholder and ask for role details.
-- If custom run criteria is provided, pass `--run-check` to inject a member-specific stub into team-local `run.py`.
 - Do not create or edit other members in this mode.
-
-## Mode: Update Run Script
-
-Use only when asked to update one team-local runner from the latest template.
-
-Preconditions:
-
-- Team directory exists.
-- `TEAM_<name>/run.py` exists.
-- `$TEAM_RUNNER_TEMPLATE` exists and points to `skills/team/scripts/run.py`.
-
-Required sequence:
-
-1. Resolve paths and create a backup of local runner.
-- Local: `TEAM_<name>/run.py`
-- Template: `$TEAM_RUNNER_TEMPLATE`
-
-2. Diff template vs local and classify hunks.
-- Additions-only in template.
-- Additions+deletions in template with no overlap against local custom behavior.
-- Conflicting edits where template changes overlap local custom behavior.
-
-3. Apply by class.
-- Additions-only: apply additions, keep local lines.
-- Non-conflicting additions+deletions: apply both so local picks up latest template behavior.
-- Conflicts: manual merge. First align to latest template structure, then re-apply local behavior from backup.
-
-4. Validate and finalize.
-- Keep executable bit: `chmod +x TEAM_<name>/run.py`.
-- Preserve `# TEAM_RUN_CUSTOM_CHECKS` and existing member registrations unless intentionally removed.
-- Validate syntax: `python3 -m py_compile "TEAM_<name>/run.py"`.
-- Validate wiring: `python3 "./TEAM_<name>/run.py" --dry-run`.
-
-Hard constraints:
-
-- Edit only `TEAM_<name>/run.py` in this mode.
-- Never silently drop local custom logic.
-- If merge choice is uncertain, preserve local behavior and call out the decision.
-- Execute this mode only.
-
-## Team Runner (`TEAM_<name>/run.py`)
-
-Use the runner for scheduler-style execution:
-
-```bash
-python3 "./TEAM_<name>/run.py"
-python3 "./TEAM_<name>/run.py" --rounds <n>
-python3 "./TEAM_<name>/run.py" --model "gpt-5.3-codex" --reasoning-effort medium
-python3 "./TEAM_<name>/run.py" --sequential
-```
-
-Semantics:
-
-- For every non-dry-run member execution, append current UTC timestamp to `members/<member>/.run`.
-- `--rounds` default is `1`.
-- Each round evaluates run criteria first, then runs runnable members.
-- Default is concurrent runs with per-round barrier before next round.
-- `--sequential` runs members one at a time.
-- Before each round, runner checks unread CEO inbox messages (`receiver = ceo`, `status = unread`). If any exist, pause for human handling and re-check after confirmation.
-- Member runs use project root (parent of `TEAM_<name>/`) as Codex working directory.
-- Defaults: `--model gpt-5.3-codex`, `--reasoning-effort medium`.
-
-Default per-member run criteria:
-
-- At least one unread message for that member, or
-- At least one actionable task (`todo` or `in_progress`) for that member.
-
-Customize team criteria by editing `TEAM_<name>/run.py`.
-For member-specific criteria at recruit time, use `--run-check` then refine the generated stub.
 
 ## Mode: Execute
 
