@@ -166,6 +166,19 @@ When the CEO console opens, it provides:
 7. Unarchive a member message
 8. Send a message to a member
 
+Navigation controls:
+
+- Use `Up` / `Down` arrows to move through the main menu.
+- Press `Enter` to open the selected view.
+- Press `b` to go back in screen history.
+- Press `f` to go forward in screen history.
+- Press `q` to close the current screen (or quit from the main menu).
+- In task/message tables, use `Up` / `Down` to move row selection and `Enter` to open the selected item.
+- In task/message detail views, use arrow keys to move a readonly cursor over text.
+- Press `Enter` on a hovered ID (full UUID or unique suffix) to open the linked task/message.
+- In CEO inbox message detail views, press `r` to open an inline reply draft panel below the open message.
+- In the reply draft panel, use `F2` to send and `F1` to discard the draft and return to the message view (`Ctrl-S`/`Ctrl-Q` are also supported when the terminal allows them).
+
 ### Inbox and Status Behavior
 
 - New messages start as `unread`.
