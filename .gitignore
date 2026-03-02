@@ -1,0 +1,21 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# OS/editor noise
+.DS_Store
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Runtime and test artifacts produced while using the skill
+TEAM_*/
+state/
+*.sqlite3
+*.sqlite3-*
+*.db
+

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Team"
+  short_description: "Create and run mission-driven teams"
+  default_prompt: "Create, recruit, or execute one team member work round."
