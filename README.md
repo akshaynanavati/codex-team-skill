@@ -46,7 +46,7 @@ Install this skill from:
 Run:
 
 ```bash
-codex exec "Use $skill-installer. Install skill from GitHub URL: https://github.com/akshaynanavati/codex-team-skill/tree/main/team"
+codex exec --skip-git-repo-check 'Use $skill-installer. Install skill from GitHub URL: https://github.com/akshaynanavati/codex-team-skill/tree/main/team'
 ```
 
 After installation, restart Codex so the new skill is loaded.
