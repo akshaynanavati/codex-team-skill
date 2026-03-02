@@ -472,6 +472,7 @@ def main() -> int:
                     args.reasoning_effort,
                     args.codex_arg,
                 )
+                command_display = print_command(command)
 
                 if args.dry_run:
                     summary["ran"].append(
@@ -485,7 +486,7 @@ def main() -> int:
                         }
                     )
                     print(f"[DRY-RUN] round={round_number} {member_key}: {reason}")
-                    print(f"          {print_command(command)}")
+                    print(f"          {command_display}")
                     continue
 
                 try:
@@ -513,6 +514,7 @@ def main() -> int:
                     continue
 
                 print(f"[RUN ] round={round_number} {member_key}: {reason}")
+                print(f"          {command_display}")
                 if args.sequential:
                     try:
                         returncode = subprocess.run(command, check=False).returncode
