@@ -15,12 +15,15 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable, Mapping
 
 VALID_MEMBER = re.compile(r"^[A-Za-z0-9._-]+$")
 DB_FILENAME = "team_state.sqlite3"
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
 CEO_UNREAD_PREVIEW_LIMIT = 10
 MESSAGE_BODY_PREVIEW_WIDTH = 96
+CustomDecision = bool | None
+ShouldRunCheck = Callable[[sqlite3.Connection, str, Path], tuple[CustomDecision, str]]
 
 
 def fail(message: str) -> int:
@@ -216,7 +219,6 @@ def wait_for_ceo_inbox_clear(
         if response in {"q", "quit", "exit"}:
             return False
 
-
 def count_actionable_tasks(conn: sqlite3.Connection, member: str) -> int:
     row = conn.execute(
         """
@@ -244,6 +246,71 @@ def default_should_run(conn: sqlite3.Connection, member: str, team_root: Path) -
     if actionable_count > 0:
         reasons.append(f"{actionable_count} todo/in_progress task(s)")
     return True, " and ".join(reasons)
+
+
+def collect_custom_member_filters(
+    team_root: Path,
+    custom_member_checks: Mapping[str, ShouldRunCheck] | None,
+) -> tuple[set[str], set[str]]:
+    if not custom_member_checks:
+        return set(), set()
+
+    members = discover_members(team_root)
+    allow_members: set[str] = set()
+    deny_members: set[str] = set()
+
+    conn = connect_database(team_root)
+    try:
+        for raw_member, checker in sorted(custom_member_checks.items()):
+            try:
+                member_key = normalize_member(raw_member, "custom member")
+            except ValueError as exc:
+                print(f"[WARN] invalid custom run check member {raw_member!r}: {exc}", file=sys.stderr)
+                continue
+
+            if member_key not in members:
+                print(
+                    f"[WARN] custom run check references missing member '{member_key}'; skipping.",
+                    file=sys.stderr,
+                )
+                continue
+
+            try:
+                decision, reason = checker(conn, member_key, team_root)
+            except Exception as exc:  # noqa: BLE001 - isolate custom-check failures
+                print(
+                    f"[WRAP] custom decision {member_key}: allow (custom check failed: {exc!r})",
+                    flush=True,
+                )
+                allow_members.add(member_key)
+                continue
+
+            clean_reason = (reason or "").strip() or "custom check"
+            if decision is None:
+                print(f"[WRAP] custom decision {member_key}: defer ({clean_reason})", flush=True)
+                continue
+
+            if not isinstance(decision, bool):
+                print(
+                    f"[WARN] custom check for {member_key} returned non-bool/non-None; "
+                    "deferring to run.py defaults.",
+                    file=sys.stderr,
+                )
+                continue
+
+            decision_name = "allow" if decision else "deny"
+            print(
+                f"[WRAP] custom decision {member_key}: {decision_name} ({clean_reason})",
+                flush=True,
+            )
+            if decision:
+                allow_members.add(member_key)
+            else:
+                deny_members.add(member_key)
+    finally:
+        conn.close()
+
+    return allow_members, deny_members
 
 
 def build_execute_prompt(member: str, team_root: Path) -> str:
