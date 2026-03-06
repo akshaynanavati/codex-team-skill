@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -218,6 +219,48 @@ def wait_for_ceo_inbox_clear(
 
         if response in {"q", "quit", "exit"}:
             return False
+
+
+def _escape_applescript_string(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def send_os_notification(title: str, message: str) -> None:
+    clean_title = " ".join(title.split())
+    clean_message = " ".join(message.split())
+    if not clean_title or not clean_message:
+        return
+
+    try:
+        if sys.platform == "darwin":
+            if shutil.which("osascript") is None:
+                return
+            script = (
+                'display notification '
+                f'"{_escape_applescript_string(clean_message)}" '
+                f'with title "{_escape_applescript_string(clean_title)}"'
+            )
+            subprocess.run(
+                ["osascript", "-e", script],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
+        if sys.platform.startswith("linux"):
+            if shutil.which("notify-send") is None:
+                return
+            subprocess.run(
+                ["notify-send", clean_title, clean_message],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except OSError:
+        # Best-effort notification; never break scheduler behavior on notifier issues.
+        return
+
 
 def count_actionable_tasks(conn: sqlite3.Connection, member: str) -> int:
     row = conn.execute(
@@ -520,6 +563,22 @@ def main() -> int:
                 args.rounds,
                 ignore_ceo_messages=args.ignore_ceo_messages,
             ):
+                try:
+                    unread_ceo = count_unread_messages(conn, "ceo")
+                except sqlite3.Error:
+                    unread_ceo = -1
+                unread_fragment = (
+                    f"{unread_ceo} unread CEO message(s)"
+                    if unread_ceo >= 0
+                    else "unread CEO messages"
+                )
+                send_os_notification(
+                    "Team run stopped",
+                    (
+                        f"{team_root.name}: round {round_number}/{args.rounds} stopped due to "
+                        f"{unread_fragment}."
+                    ),
+                )
                 print(
                     "[HINT] Re-run with --ignore-ceo-messages to continue rounds "
                     "even when CEO has unread messages."
