@@ -30,11 +30,13 @@ except ImportError:  # pragma: no cover - non-POSIX fallback
 
 TASK_SCOPE_CHOICES = ("open", "all", *runtime.TASK_STATES)
 MESSAGE_SCOPE_CHOICES = runtime.MESSAGE_LIST_SCOPES
+MESSAGE_SCOPE_CYCLE = ("all", "inbox", "unread", "read", "archived")
 TASK_DISPLAY_STATE_ORDER = {
     "todo": 0,
     "done": 1,
     "cancelled": 2,
 }
+DEFAULT_TABLE_LIMIT = 200
 
 KEY_UP = "up"
 KEY_DOWN = "down"
@@ -61,13 +63,21 @@ ACTION_FORWARD = "forward"
 ACTION_OPEN = "open"
 ACTION_STAY = "stay"
 ACTION_QUIT = "quit"
+ACTION_FILTER_TEXT = "filter_text"
+ACTION_FILTER_OWNER = "filter_owner"
+ACTION_FILTER_ORIGIN = "filter_origin"
+ACTION_FILTER_DESTINATION = "filter_destination"
+ACTION_FILTER_SCOPE = "filter_scope"
+ACTION_FILTER_LIMIT = "filter_limit"
+ACTION_FILTER_CLEAR = "filter_clear"
+ACTION_ARCHIVE_HOVERED = "archive_hovered"
+ACTION_UNARCHIVE_HOVERED = "unarchive_hovered"
 
 SCREEN_MENU = "menu"
 SCREEN_TASK_LIST = "task_list"
 SCREEN_TASK_DETAIL = "task_detail"
 SCREEN_MESSAGE_LIST = "message_list"
 SCREEN_MESSAGE_DETAIL = "message_detail"
-SCREEN_ARCHIVED_LIST = "archived_list"
 
 ID_TOKEN_RE = re.compile(r"^[0-9a-fA-F-]{2,36}$")
 
@@ -245,6 +255,12 @@ def read_keypress(fd: int) -> str:
     if first != b"\x1b":
         if first.isdigit():
             return first.decode("ascii")
+        try:
+            char = first.decode("utf-8").lower()
+        except UnicodeDecodeError:
+            return ""
+        if char.isprintable():
+            return char
         return ""
 
     ready, _, _ = select.select([fd], [], [], 0.02)
@@ -538,20 +554,26 @@ def interactive_table_selection(
     label: str,
     raw_rows: list[sqlite3.Row],
     id_key: str,
+    hotkeys: dict[str, str] | None = None,
+    hotkey_help: str | None = None,
+    initial_index: int = 0,
 ) -> SelectionResult:
-    if not rows:
-        return SelectionResult(ACTION_CANCEL, None)
-
     if not supports_interactive_navigation():
+        if not rows:
+            return SelectionResult(ACTION_CANCEL, None)
         print_table(headers, rows)
         selected = prompt_record_selection_text(label, raw_rows, id_key)
         if selected is None:
             return SelectionResult(ACTION_CANCEL, None)
         return SelectionResult(ACTION_SELECT, selected)
 
-    selected_index = 0
+    if rows:
+        selected_index = max(0, min(initial_index, len(rows) - 1))
+    else:
+        selected_index = 0
     top = 0
     header_line, separator_line, row_lines = build_table_lines(headers, rows)
+    row_count = len(row_lines)
 
     with RawKeyboardSession() as fd:
         while True:
@@ -562,33 +584,44 @@ def interactive_table_selection(
             print(header_line)
             print(separator_line)
 
-            fixed_lines = len(title_lines) + 6
+            fixed_lines = len(title_lines) + 6 + (1 if hotkey_help else 0)
             available_rows = max(1, terminal_lines() - fixed_lines)
-            top = compute_window_start(selected_index, len(row_lines), available_rows, top)
-            end = min(len(row_lines), top + available_rows)
+            top = compute_window_start(selected_index, row_count, available_rows, top)
+            end = min(row_count, top + available_rows)
 
-            if top > 0:
-                print(f"... {top} more above ...")
-            for index in range(top, end):
-                prefix = ">" if index == selected_index else " "
-                rendered = f"{prefix} {row_lines[index]}"
-                print(style_selected(rendered) if index == selected_index else rendered)
-            if end < len(row_lines):
-                print(f"... {len(row_lines) - end} more below ...")
+            if row_count == 0:
+                print("(no rows)")
+            else:
+                if top > 0:
+                    print(f"... {top} more above ...")
+                for index in range(top, end):
+                    prefix = ">" if index == selected_index else " "
+                    rendered = f"{prefix} {row_lines[index]}"
+                    print(style_selected(rendered) if index == selected_index else rendered)
+                if end < row_count:
+                    print(f"... {row_count - end} more below ...")
 
             print()
             print(f"Use Up/Down and Enter to open a {label}. Press b/f for history, q to return.")
+            if hotkey_help:
+                print(hotkey_help)
 
             key = read_keypress(fd)
             if key == KEY_UP:
-                selected_index = (selected_index - 1) % len(row_lines)
+                if row_count > 0:
+                    selected_index = (selected_index - 1) % row_count
             elif key == KEY_DOWN:
-                selected_index = (selected_index + 1) % len(row_lines)
+                if row_count > 0:
+                    selected_index = (selected_index + 1) % row_count
             elif key == KEY_PAGE_UP:
-                selected_index = max(0, selected_index - available_rows)
+                if row_count > 0:
+                    selected_index = max(0, selected_index - available_rows)
             elif key == KEY_PAGE_DOWN:
-                selected_index = min(len(row_lines) - 1, selected_index + available_rows)
+                if row_count > 0:
+                    selected_index = min(row_count - 1, selected_index + available_rows)
             elif key == KEY_ENTER:
+                if row_count == 0:
+                    continue
                 return SelectionResult(ACTION_SELECT, selected_index)
             elif key == KEY_BACK:
                 return SelectionResult(ACTION_BACK, None)
@@ -596,9 +629,11 @@ def interactive_table_selection(
                 return SelectionResult(ACTION_FORWARD, None)
             elif key in {KEY_ESCAPE, KEY_QUIT}:
                 return SelectionResult(ACTION_CANCEL, None)
+            elif hotkeys is not None and key in hotkeys:
+                return SelectionResult(hotkeys[key], selected_index if row_count > 0 else None)
             elif key.isdigit():
                 typed = int(key)
-                if 1 <= typed <= len(row_lines):
+                if 1 <= typed <= row_count:
                     selected_index = typed - 1
 
 
@@ -1899,6 +1934,174 @@ def build_message_detail_lines(row: sqlite3.Row) -> list[str]:
     return lines
 
 
+def query_tasks_created_from_message(
+    conn: sqlite3.Connection,
+    message_row: sqlite3.Row,
+) -> list[sqlite3.Row]:
+    # Trace related tasks via explicit message.task_id links and message_id references in task/message text.
+    message_id = str(message_row["message_id"])
+    message_like = f"%{message_id.lower()}%"
+    clauses = [
+        "lower(t.body) LIKE ?",
+        """
+        t.task_id IN (
+            SELECT m.task_id
+            FROM messages m
+            WHERE m.task_id IS NOT NULL
+              AND (
+                  m.message_id = ?
+                  OR lower(m.body) LIKE ?
+                  OR lower(m.subject) LIKE ?
+              )
+        )
+        """,
+    ]
+    params: list[object] = [message_like, message_id, message_like, message_like]
+
+    linked_task_id = str(message_row["task_id"] or "").strip()
+    if linked_task_id:
+        clauses.append("t.task_id = ?")
+        params.append(linked_task_id)
+
+    where_clause = " OR ".join(clauses)
+    return conn.execute(
+        f"""
+        SELECT DISTINCT t.task_id, t.owner, t.state, t.priority, t.body, t.created_at, t.updated_at
+        FROM tasks t
+        WHERE {where_clause}
+        ORDER BY t.priority DESC, t.created_at ASC, t.task_id ASC
+        """,
+        params,
+    ).fetchall()
+
+
+def build_related_task_lines(rows: list[sqlite3.Row]) -> list[str]:
+    lines = ["", "tasks_created_from_message:"]
+    if not rows:
+        lines.append("(none found)")
+        return lines
+
+    table_rows = [
+        [
+            str(row["task_id"]),
+            render_text(row["owner"]),
+            render_text(row["state"]),
+            str(row["priority"]),
+            runtime.body_preview(render_text(row["body"]), 56),
+        ]
+        for row in rows
+    ]
+    header_line, separator_line, row_lines = build_table_lines(
+        headers=["task_id", "owner", "state", "prio", "body_preview"],
+        rows=table_rows,
+    )
+    lines.append(header_line)
+    lines.append(separator_line)
+    lines.extend(row_lines)
+    lines.append("Tip: hover task_id and press Enter to open task detail.")
+    return lines
+
+
+def build_message_detail_with_tasks(
+    conn: sqlite3.Connection,
+    message_row: sqlite3.Row,
+) -> list[str]:
+    lines = build_message_detail_lines(message_row)
+    related_tasks = query_tasks_created_from_message(conn, message_row)
+    lines.extend(build_related_task_lines(related_tasks))
+    return lines
+
+
+def cycle_choice(current: str, choices: tuple[str, ...]) -> str:
+    if current not in choices:
+        return choices[0]
+    index = choices.index(current)
+    return choices[(index + 1) % len(choices)]
+
+
+def prompt_optional_identity_filter(
+    label: str,
+    current: str,
+    field_name: str,
+) -> str:
+    while True:
+        shown = current or "*"
+        raw = input(f"{label} filter (Enter keep, '-' clear) [{shown}]: ").strip()
+        if not raw:
+            return current
+        if raw == "-":
+            return ""
+        try:
+            return runtime.normalize_identity(raw, field_name)
+        except ValueError as exc:
+            print(exc)
+
+
+def prompt_optional_text_filter(label: str, current: str) -> str:
+    shown = current or "*"
+    raw = input(f"{label} text filter (Enter keep, '-' clear) [{shown}]: ").strip()
+    if not raw:
+        return current
+    if raw == "-":
+        return ""
+    return raw
+
+
+def format_filter_value(value: str) -> str:
+    return value if value else "*"
+
+
+def query_task_rows_for_screen(
+    conn: sqlite3.Connection,
+    owner: str,
+    scope: str,
+    text: str,
+    limit: int,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if owner:
+        clauses.append("owner = ?")
+        params.append(owner)
+
+    if scope == "open":
+        clauses.append("state IN ('todo', 'in_progress', 'blocked')")
+    elif scope != "all":
+        clauses.append("state = ?")
+        params.append(scope)
+
+    if text:
+        like = f"%{text.lower()}%"
+        clauses.append(
+            """
+            (
+                lower(task_id) LIKE ?
+                OR lower(owner) LIKE ?
+                OR lower(state) LIKE ?
+                OR lower(COALESCE(created_by, '')) LIKE ?
+                OR lower(COALESCE(blocked_reason, '')) LIKE ?
+                OR lower(body) LIKE ?
+            )
+            """
+        )
+        params.extend([like, like, like, like, like, like])
+
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    rows = conn.execute(
+        f"""
+        SELECT task_id, owner, state, body, priority, created_by, created_at, updated_at, blocked_reason
+        FROM tasks
+        {where_clause}
+        ORDER BY priority DESC, created_at ASC, task_id ASC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return sort_task_rows_for_display(rows)
+
+
 def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> ScreenResult:
     title_lines = [
         "Team CEO Console (Human-only)",
@@ -1906,13 +2109,10 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
         f"db:   {db_path}",
     ]
     options = [
-        "View tasks by member",
-        "View all tasks",
-        "View messages for any member",
-        "View all messages",
+        "View tasks table",
+        "View messages table",
         "View CEO inbox",
         "Respond to a message",
-        "Unarchive a member message",
         "Send a message to a member",
         "Quit",
     ]
@@ -1933,265 +2133,350 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
 
     choice = selected.index
     if choice == 0:
-        clear_screen()
-        print("View Tasks By Member")
-        member = prompt_member(conn, team_root)
-        scope = prompt_scope("Task scope", TASK_SCOPE_CHOICES, "open")
-        limit = prompt_int("Limit", 50)
-        return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_TASK_LIST, (member, scope, limit)))
-    if choice == 1:
-        clear_screen()
-        print("View All Tasks")
-        scope = prompt_scope("Task scope", TASK_SCOPE_CHOICES, "all")
-        limit = prompt_int("Limit", 100)
-        return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_TASK_LIST, ("", scope, limit)))
-    if choice == 2:
-        clear_screen()
-        print("View Messages")
-        member = prompt_member(conn, team_root)
-        scope = prompt_scope("Message scope", MESSAGE_SCOPE_CHOICES, "inbox")
-        sender_filter = prompt_line("Sender filter (blank for any)", "")
-        sender = ""
-        if sender_filter:
-            try:
-                sender = runtime.normalize_identity(sender_filter, "sender")
-            except ValueError as exc:
-                print(exc)
-                pause()
-                return ScreenResult(ACTION_STAY)
-        limit = prompt_int("Limit", 50)
         return ScreenResult(
             ACTION_OPEN,
-            ScreenEntry(SCREEN_MESSAGE_LIST, ("member", member, scope, sender, limit)),
+            ScreenEntry(SCREEN_TASK_LIST, ("", "all", "", DEFAULT_TABLE_LIMIT)),
+        )
+    if choice == 1:
+        return ScreenResult(
+            ACTION_OPEN,
+            ScreenEntry(SCREEN_MESSAGE_LIST, ("", "", "all", "", DEFAULT_TABLE_LIMIT)),
+        )
+    if choice == 2:
+        return ScreenResult(
+            ACTION_OPEN,
+            ScreenEntry(SCREEN_MESSAGE_LIST, ("", "ceo", "inbox", "", DEFAULT_TABLE_LIMIT)),
         )
     if choice == 3:
-        clear_screen()
-        print("View All Messages")
-        scope = prompt_scope("Message scope", MESSAGE_SCOPE_CHOICES, "all")
-        limit = prompt_int("Limit", 100)
         return ScreenResult(
             ACTION_OPEN,
-            ScreenEntry(SCREEN_MESSAGE_LIST, ("all", "", scope, "", limit)),
+            ScreenEntry(SCREEN_MESSAGE_LIST, ("", "ceo", "all", "", DEFAULT_TABLE_LIMIT)),
         )
     if choice == 4:
-        return ScreenResult(
-            ACTION_OPEN,
-            ScreenEntry(SCREEN_MESSAGE_LIST, ("member", "ceo", "inbox", "", 100)),
-        )
-    if choice == 5:
-        return ScreenResult(
-            ACTION_OPEN,
-            ScreenEntry(SCREEN_MESSAGE_LIST, ("member", "ceo", "all", "", 100)),
-        )
-    if choice == 6:
-        clear_screen()
-        print("Unarchive Member Messages")
-        member = prompt_member(conn, team_root)
-        limit = prompt_int("Limit", 50)
-        return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_ARCHIVED_LIST, (member, limit)))
-    if choice == 7:
         send_message_to_member(conn, team_root)
         return ScreenResult(ACTION_STAY)
     return ScreenResult(ACTION_QUIT)
 
 
 def screen_task_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
-    owner_raw, scope, limit = screen.params
-    owner = str(owner_raw) if owner_raw else None
-    rows = sort_task_rows_for_display(
-        runtime.query_task_rows(conn, owner=owner, state_scope=str(scope), limit=int(limit))
-    )
-    title = (
-        f"Tasks for {owner} (scope={scope}, count={len(rows)})"
-        if owner
-        else f"All tasks (scope={scope}, count={len(rows)})"
-    )
-    if not rows:
-        clear_screen()
-        print(title)
-        print()
-        print("No tasks found.")
-        pause()
-        return ScreenResult(ACTION_CANCEL)
+    if len(screen.params) >= 4:
+        owner, scope, text, limit = (
+            str(screen.params[0]),
+            str(screen.params[1]),
+            str(screen.params[2]),
+            int(screen.params[3]),
+        )
+    else:
+        owner_raw, scope, limit = screen.params
+        owner = str(owner_raw) if owner_raw else ""
+        text = ""
+        scope = str(scope)
+        limit = int(limit)
 
-    table_rows = [
-        [
-            str(index),
-            short_id(row["task_id"]),
-            row["owner"],
-            row["state"],
-            runtime.body_preview(render_text(row["body"]), 48),
+    selected_index = 0
+    notice = ""
+
+    hotkeys = {
+        "/": ACTION_FILTER_TEXT,
+        "o": ACTION_FILTER_OWNER,
+        "s": ACTION_FILTER_SCOPE,
+        "l": ACTION_FILTER_LIMIT,
+        "c": ACTION_FILTER_CLEAR,
+    }
+
+    while True:
+        rows = query_task_rows_for_screen(conn, owner=owner, scope=scope, text=text, limit=limit)
+        title_lines = [
+            f"Task table (count={len(rows)})",
+            (
+                "Filters: "
+                f"owner={format_filter_value(owner)} | "
+                f"scope={scope} | "
+                f"text={format_filter_value(text)} | "
+                f"limit={limit}"
+            ),
         ]
-        for index, row in enumerate(rows, start=1)
-    ]
-    selection = interactive_table_selection(
-        title_lines=[title],
-        headers=["no", "task_id", "owner", "state", "body_preview"],
-        rows=table_rows,
-        label="task",
-        raw_rows=rows,
-        id_key="task_id",
-    )
-    if selection.action == ACTION_BACK:
-        return ScreenResult(ACTION_BACK)
-    if selection.action == ACTION_FORWARD:
-        return ScreenResult(ACTION_FORWARD)
-    if selection.action != ACTION_SELECT or selection.index is None:
-        return ScreenResult(ACTION_CANCEL)
-    task_id = str(rows[selection.index]["task_id"])
-    return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_TASK_DETAIL, (task_id,)))
+        if notice:
+            title_lines.append(f"Last action: {notice}")
+
+        table_rows = [
+            [
+                str(index),
+                short_id(row["task_id"]),
+                row["owner"],
+                row["state"],
+                str(row["priority"]),
+                runtime.body_preview(render_text(row["body"]), 48),
+            ]
+            for index, row in enumerate(rows, start=1)
+        ]
+
+        selection = interactive_table_selection(
+            title_lines=title_lines,
+            headers=["no", "task_id", "owner", "state", "prio", "body_preview"],
+            rows=table_rows,
+            label="task",
+            raw_rows=rows,
+            id_key="task_id",
+            hotkeys=hotkeys,
+            hotkey_help=(
+                "Hotkeys: / text | o owner | s scope cycle | l limit | c clear filters"
+            ),
+            initial_index=selected_index,
+        )
+        if selection.index is not None:
+            selected_index = selection.index
+
+        if selection.action == ACTION_BACK:
+            return ScreenResult(ACTION_BACK)
+        if selection.action == ACTION_FORWARD:
+            return ScreenResult(ACTION_FORWARD)
+        if selection.action == ACTION_CANCEL:
+            return ScreenResult(ACTION_CANCEL)
+        if selection.action == ACTION_SELECT and selection.index is not None:
+            task_id = str(rows[selection.index]["task_id"])
+            return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_TASK_DETAIL, (task_id,)))
+        if selection.action == ACTION_FILTER_SCOPE:
+            scope = cycle_choice(scope, TASK_SCOPE_CHOICES)
+            notice = f"scope -> {scope}"
+            continue
+        if selection.action == ACTION_FILTER_OWNER:
+            clear_screen()
+            owner = prompt_optional_identity_filter("Owner", owner, "owner")
+            notice = f"owner -> {format_filter_value(owner)}"
+            continue
+        if selection.action == ACTION_FILTER_TEXT:
+            clear_screen()
+            text = prompt_optional_text_filter("Task", text)
+            notice = f"text -> {format_filter_value(text)}"
+            continue
+        if selection.action == ACTION_FILTER_LIMIT:
+            clear_screen()
+            limit = prompt_int("Limit", limit)
+            notice = f"limit -> {limit}"
+            continue
+        if selection.action == ACTION_FILTER_CLEAR:
+            owner = ""
+            scope = "all"
+            text = ""
+            limit = DEFAULT_TABLE_LIMIT
+            notice = "filters reset"
+            continue
+
+        notice = ""
 
 
 def query_message_rows_for_screen(
     conn: sqlite3.Connection,
-    mode: str,
-    member: str,
-    scope: str,
     sender: str,
+    receiver: str,
+    scope: str,
+    text: str,
     limit: int,
 ) -> list[sqlite3.Row]:
-    if mode == "all":
-        clauses: list[str] = []
-        params: list[object] = []
-        if scope == "inbox":
-            clauses.append("status IN ('unread', 'read')")
-        elif scope != "all":
-            clauses.append("status = ?")
-            params.append(scope)
-        if sender:
-            clauses.append("sender = ?")
-            params.append(sender)
-        where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.append(limit)
-        return conn.execute(
-            f"""
-            SELECT message_id, sender, receiver, subject, body, created_at, status, read_at, archived_at, task_id
-            FROM messages
-            {where_clause}
-            ORDER BY receiver ASC, created_at DESC, message_id ASC
-            LIMIT ?
-            """,
-            params,
-        ).fetchall()
+    clauses: list[str] = []
+    params: list[object] = []
 
-    return runtime.query_message_rows(
-        conn=conn,
-        member=member,
-        status_scope=scope,
-        sender=sender or None,
-        limit=limit,
-    )
+    if sender:
+        clauses.append("sender = ?")
+        params.append(sender)
+    if receiver:
+        clauses.append("receiver = ?")
+        params.append(receiver)
+
+    if scope == "inbox":
+        clauses.append("status IN ('unread', 'read')")
+    elif scope != "all":
+        clauses.append("status = ?")
+        params.append(scope)
+
+    if text:
+        like = f"%{text.lower()}%"
+        clauses.append(
+            """
+            (
+                lower(message_id) LIKE ?
+                OR lower(sender) LIKE ?
+                OR lower(receiver) LIKE ?
+                OR lower(subject) LIKE ?
+                OR lower(body) LIKE ?
+                OR lower(COALESCE(task_id, '')) LIKE ?
+            )
+            """
+        )
+        params.extend([like, like, like, like, like, like])
+
+    where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    return conn.execute(
+        f"""
+        SELECT message_id, sender, receiver, subject, body, created_at, status, read_at, archived_at, task_id
+        FROM messages
+        {where_clause}
+        ORDER BY receiver ASC, created_at DESC, message_id ASC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
 
 
 def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
-    mode, member, scope, sender, limit = screen.params
-    rows = query_message_rows_for_screen(
-        conn=conn,
-        mode=str(mode),
-        member=str(member),
-        scope=str(scope),
-        sender=str(sender),
-        limit=int(limit),
-    )
-    if str(mode) == "all":
-        title = f"All messages (scope={scope}, count={len(rows)})"
+    if len(screen.params) >= 5 and str(screen.params[0]) in {"all", "member"}:
+        mode, member, scope, sender, limit = screen.params
+        receiver = "" if str(mode) == "all" else str(member)
+        text = ""
+        sender = str(sender)
+        scope = str(scope)
+        limit = int(limit)
     else:
-        title = f"Messages for {member} (scope={scope}, count={len(rows)})"
+        sender, receiver, scope, text, limit = (
+            str(screen.params[0]),
+            str(screen.params[1]),
+            str(screen.params[2]),
+            str(screen.params[3]),
+            int(screen.params[4]),
+        )
 
-    if not rows:
-        clear_screen()
-        print(title)
-        print()
-        print("No messages found.")
-        pause()
-        return ScreenResult(ACTION_CANCEL)
+    selected_index = 0
+    notice = ""
 
-    table_rows = [
-        [
-            str(index),
-            short_id(row["message_id"]),
-            row["sender"],
-            row["receiver"],
-            format_timestamp_human(row["created_at"]),
-            row["status"],
-            runtime.body_preview(render_text(row["body"]), 48),
+    hotkeys = {
+        "/": ACTION_FILTER_TEXT,
+        "o": ACTION_FILTER_ORIGIN,
+        "d": ACTION_FILTER_DESTINATION,
+        "s": ACTION_FILTER_SCOPE,
+        "l": ACTION_FILTER_LIMIT,
+        "c": ACTION_FILTER_CLEAR,
+        "a": ACTION_ARCHIVE_HOVERED,
+        "u": ACTION_UNARCHIVE_HOVERED,
+    }
+
+    while True:
+        rows = query_message_rows_for_screen(
+            conn=conn,
+            sender=sender,
+            receiver=receiver,
+            scope=scope,
+            text=text,
+            limit=limit,
+        )
+        title_lines = [
+            f"Message table (count={len(rows)})",
+            (
+                "Filters: "
+                f"from={format_filter_value(sender)} | "
+                f"to={format_filter_value(receiver)} | "
+                f"scope={scope} | "
+                f"text={format_filter_value(text)} | "
+                f"limit={limit}"
+            ),
         ]
-        for index, row in enumerate(rows, start=1)
-    ]
-    selection = interactive_table_selection(
-        title_lines=[title],
-        headers=["no", "message_id", "from", "to", "timestamp", "status", "body_preview"],
-        rows=table_rows,
-        label="message",
-        raw_rows=rows,
-        id_key="message_id",
-    )
-    if selection.action == ACTION_BACK:
-        return ScreenResult(ACTION_BACK)
-    if selection.action == ACTION_FORWARD:
-        return ScreenResult(ACTION_FORWARD)
-    if selection.action != ACTION_SELECT or selection.index is None:
-        return ScreenResult(ACTION_CANCEL)
-    message_id = str(rows[selection.index]["message_id"])
-    return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_MESSAGE_DETAIL, (message_id,)))
+        if notice:
+            title_lines.append(f"Last action: {notice}")
 
-
-def screen_archived_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
-    member, limit = screen.params
-    rows = runtime.query_message_rows(
-        conn=conn,
-        member=str(member),
-        status_scope="archived",
-        sender=None,
-        limit=int(limit),
-    )
-    title = f"Archived messages for {member} (count={len(rows)})"
-    if not rows:
-        clear_screen()
-        print(title)
-        print()
-        print("No archived messages found.")
-        pause()
-        return ScreenResult(ACTION_CANCEL)
-
-    table_rows = [
-        [
-            str(index),
-            short_id(row["message_id"]),
-            row["sender"],
-            row["receiver"],
-            format_timestamp_human(row["created_at"]),
-            row["status"],
-            runtime.body_preview(render_text(row["body"]), 48),
+        table_rows = [
+            [
+                str(index),
+                short_id(row["message_id"]),
+                row["sender"],
+                row["receiver"],
+                format_timestamp_human(row["created_at"]),
+                row["status"],
+                runtime.body_preview(render_text(row["body"]), 48),
+            ]
+            for index, row in enumerate(rows, start=1)
         ]
-        for index, row in enumerate(rows, start=1)
-    ]
-    selection = interactive_table_selection(
-        title_lines=[title],
-        headers=["no", "message_id", "from", "to", "timestamp", "status", "body_preview"],
-        rows=table_rows,
-        label="message",
-        raw_rows=rows,
-        id_key="message_id",
-    )
-    if selection.action == ACTION_BACK:
-        return ScreenResult(ACTION_BACK)
-    if selection.action == ACTION_FORWARD:
-        return ScreenResult(ACTION_FORWARD)
-    if selection.action != ACTION_SELECT or selection.index is None:
-        return ScreenResult(ACTION_CANCEL)
 
-    message_id = str(rows[selection.index]["message_id"])
-    updated = unarchive_message_for_member(conn, str(member), message_id)
-    clear_screen()
-    if updated is None:
-        print("Message not found or not archived anymore.")
-    else:
-        print(f"unarchived: {updated['message_id']}")
-        print(f"owner: {updated['receiver']}")
-        print(f"status: {updated['status']}")
-    pause()
-    return ScreenResult(ACTION_STAY)
+        selection = interactive_table_selection(
+            title_lines=title_lines,
+            headers=["no", "message_id", "from", "to", "timestamp", "status", "body_preview"],
+            rows=table_rows,
+            label="message",
+            raw_rows=rows,
+            id_key="message_id",
+            hotkeys=hotkeys,
+            hotkey_help=(
+                "Hotkeys: / text | o from | d to | s scope cycle | l limit | c clear | a archive hovered | u unarchive hovered"
+            ),
+            initial_index=selected_index,
+        )
+        if selection.index is not None:
+            selected_index = selection.index
+
+        if selection.action == ACTION_BACK:
+            return ScreenResult(ACTION_BACK)
+        if selection.action == ACTION_FORWARD:
+            return ScreenResult(ACTION_FORWARD)
+        if selection.action == ACTION_CANCEL:
+            return ScreenResult(ACTION_CANCEL)
+        if selection.action == ACTION_SELECT and selection.index is not None:
+            message_id = str(rows[selection.index]["message_id"])
+            return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_MESSAGE_DETAIL, (message_id,)))
+        if selection.action == ACTION_FILTER_SCOPE:
+            scope = cycle_choice(scope, MESSAGE_SCOPE_CYCLE)
+            notice = f"scope -> {scope}"
+            continue
+        if selection.action == ACTION_FILTER_ORIGIN:
+            clear_screen()
+            sender = prompt_optional_identity_filter("From", sender, "sender")
+            notice = f"from -> {format_filter_value(sender)}"
+            continue
+        if selection.action == ACTION_FILTER_DESTINATION:
+            clear_screen()
+            receiver = prompt_optional_identity_filter("To", receiver, "receiver")
+            notice = f"to -> {format_filter_value(receiver)}"
+            continue
+        if selection.action == ACTION_FILTER_TEXT:
+            clear_screen()
+            text = prompt_optional_text_filter("Message", text)
+            notice = f"text -> {format_filter_value(text)}"
+            continue
+        if selection.action == ACTION_FILTER_LIMIT:
+            clear_screen()
+            limit = prompt_int("Limit", limit)
+            notice = f"limit -> {limit}"
+            continue
+        if selection.action == ACTION_FILTER_CLEAR:
+            sender = ""
+            receiver = ""
+            scope = "all"
+            text = ""
+            limit = DEFAULT_TABLE_LIMIT
+            notice = "filters reset"
+            continue
+        if selection.action in {ACTION_ARCHIVE_HOVERED, ACTION_UNARCHIVE_HOVERED}:
+            if selection.index is None or not rows:
+                notice = "No hovered row."
+                continue
+            row = rows[selection.index]
+            message_id = str(row["message_id"])
+            owner = str(row["receiver"])
+            is_archived = str(row["status"]) == "archived"
+
+            if selection.action == ACTION_ARCHIVE_HOVERED:
+                if is_archived:
+                    notice = "Hovered message is already archived."
+                    continue
+                updated = archive_message_for_member(conn, owner, message_id)
+                notice = (
+                    f"archived {short_id(message_id)}"
+                    if updated is not None
+                    else "Message not found."
+                )
+                continue
+
+            if not is_archived:
+                notice = "Hovered message is not archived."
+                continue
+            updated = unarchive_message_for_member(conn, owner, message_id)
+            notice = (
+                f"unarchived {short_id(message_id)}"
+                if updated is not None
+                else "Message not found."
+            )
+            continue
+
+        notice = ""
 
 
 def screen_task_detail(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
@@ -2235,7 +2520,7 @@ def screen_message_detail(conn: sqlite3.Connection, screen: ScreenEntry) -> Scre
     result = interactive_readonly_view(
         conn=conn,
         title_lines=["Message Detail"],
-        content_lines=build_message_detail_lines(row),
+        content_lines=build_message_detail_with_tasks(conn, row),
         can_reply=row["receiver"] == "ceo",
     )
     if result.action == "reply":
@@ -2270,8 +2555,6 @@ def run_screen(
         return screen_task_list(conn, screen)
     if screen.kind == SCREEN_MESSAGE_LIST:
         return screen_message_list(conn, screen)
-    if screen.kind == SCREEN_ARCHIVED_LIST:
-        return screen_archived_list(conn, screen)
     if screen.kind == SCREEN_TASK_DETAIL:
         return screen_task_detail(conn, screen)
     if screen.kind == SCREEN_MESSAGE_DETAIL:
