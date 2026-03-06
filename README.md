@@ -15,7 +15,7 @@ The runtime is local-first: all state is stored in your team folder, and message
 - Deterministic workspace scaffolding for teams and members
 - SQLite state store for messages and tasks
 - Strict inbox isolation by member identity
-- Team scheduler (`run.py`) that triggers member runs from inbox/tasks
+- Team-local scheduler wrapper (`TEAM_<name>/run`) that triggers member runs from inbox/tasks
 - Human-only CEO console wrapper (`TEAM_<name>/ceo`) for oversight
 
 ## Repository Layout
@@ -29,7 +29,7 @@ team/
     ├── team_fs.py            # Team/member filesystem scaffolding CLI
     ├── team_cli.py           # SQLite messages/tasks CLI
     ├── team_ceo_cli.py       # Human CEO inbox/task console
-    └── run.py                # Team runner template copied into TEAM_<name>/
+    └── run.py                # Central scheduler script used by TEAM_<name>/run wrappers
 ```
 
 ## Requirements
@@ -89,7 +89,7 @@ This creates:
 - `TEAM_demo/members/`
 - `TEAM_demo/state/`
 - `TEAM_demo/ceo`
-- `TEAM_demo/run.py`
+- `TEAM_demo/run`
 
 You can also do this from an interactive Codex chat by saying:
 
@@ -120,7 +120,7 @@ codex exec 'Use $team in execute mode. Execute one work round for member analyst
 Run all runnable members with the team scheduler:
 
 ```bash
-python3 TEAM_demo/run.py
+./TEAM_demo/run
 ```
 
 The runner evaluates each member and invokes Codex for runnable members.
@@ -128,10 +128,11 @@ The runner evaluates each member and invokes Codex for runnable members.
 Useful options:
 
 ```bash
-python3 TEAM_demo/run.py --dry-run
-python3 TEAM_demo/run.py --rounds 3
-python3 TEAM_demo/run.py --member analyst --sequential
-python3 TEAM_demo/run.py --ignore-ceo-messages
+./TEAM_demo/run --dry-run
+./TEAM_demo/run --rounds 3
+./TEAM_demo/run --member analyst --sequential
+./TEAM_demo/run --allow-member analyst --deny-member pm --rounds 1
+./TEAM_demo/run --ignore-ceo-messages
 ```
 
 ## CEO CLI (Human-Only)
@@ -158,14 +159,12 @@ Important behavior:
 
 When the CEO console opens, it provides:
 
-1. View tasks by member
-2. View all tasks
-3. View messages for any member
-4. View all messages
-5. View CEO inbox
-6. Respond to a message
-7. Unarchive a member message
-8. Send a message to a member
+1. View tasks table
+2. View messages table
+3. View CEO inbox
+4. Respond to a message
+5. Send a message to a member
+6. Quit
 
 Navigation controls:
 
@@ -175,8 +174,11 @@ Navigation controls:
 - Press `f` to go forward in screen history.
 - Press `q` to close the current screen (or quit from the main menu).
 - In task/message tables, use `Up` / `Down` to move row selection and `Enter` to open the selected item.
+- Task table hotkeys: `/` text filter, `o` owner filter, `s` scope cycle, `l` limit, `c` clear filters.
+- Message table hotkeys: `/` text filter, `o` sender filter, `d` receiver filter, `s` scope cycle, `l` limit, `c` clear filters, `a` archive hovered row, `u` unarchive hovered row.
 - In task/message detail views, use arrow keys to move a readonly cursor over text.
 - Press `Enter` on a hovered ID (full UUID or unique suffix) to open the linked task/message.
+- Message detail includes a `tasks_created_from_message` section; press `Enter` on a hovered `task_id` there to jump to task detail.
 - In CEO inbox message detail views, press `r` to open an inline reply draft panel below the open message.
 - In the reply draft panel, use `F2` to send and `F1` to discard the draft and return to the message view (`Ctrl-S`/`Ctrl-Q` are also supported when the terminal allows them).
 
@@ -186,27 +188,27 @@ Navigation controls:
 - Opening a message marks it `read`.
 - After opening a message, the UI prompts to archive it.
 - Archiving sets status to `archived` and removes it from normal inbox views.
-- Unarchive (menu option `7`) restores `archived` messages to `read`.
+- Unarchive from the message table with `u` on an archived hovered row; status returns to `read`.
 
 ### CEO Escalations and Scheduler Gate
 
 Escalation flow:
 
 1. A member escalates by sending a message to receiver `ceo` (usually during execute mode when blocked/ambiguous).
-2. Before each `run.py` scheduler round, unread CEO messages are checked.
+2. Before each scheduler round, unread CEO messages are checked.
 3. If unread CEO messages exist, scheduler pauses and prompts for human intervention by default.
-4. CEO uses `./TEAM_<name>/ceo` (options `5` and `6`) to review and respond.
+4. CEO uses `./TEAM_<name>/ceo` (options `3` and `4`) to review and respond.
 5. Once CEO unread count is cleared, scheduler can continue.
 
 Notes:
 
 - The scheduler gate checks `unread` only. Reading a CEO message clears the unread state; archiving is optional.
 - In non-interactive runs, the gate cannot prompt and the scheduler exits with failure until the CEO inbox is handled.
-- To bypass this gate for a run, pass `--ignore-ceo-messages` to `run.py`.
+- To bypass this gate for a run, pass `--ignore-ceo-messages` to `TEAM_<name>/run`.
 
 ## Complete Example: Build and Operate a 4-Member Team
 
-This example creates one team with four members (max shown here), then runs and manages work using `run.py` and the human CEO CLI.
+This example creates one team with four members (max shown here), then runs and manages work using `TEAM_<name>/run` and the human CEO CLI.
 
 ### 1) Create the Team
 
@@ -216,7 +218,7 @@ codex exec 'Use $team in create mode. Create team launch_ops with mission: Plan 
 
 What this does:
 
-- Creates `TEAM_launch_ops/` with mission, members/state directories, `run.py`, and `ceo` wrapper.
+- Creates `TEAM_launch_ops/` with mission, members/state directories, `run`, and `ceo` wrappers.
 - Initializes the runtime SQLite database used by tasks/messages.
 
 ### 2) Recruit Four Members (via Codex)
@@ -242,14 +244,14 @@ Open the CEO CLI:
 
 In the menu:
 
-1. Choose `8) Send a message to a member` and send kickoff messages to `pm`, `analyst`, `engineer`, and `qa`.
-2. Use `5) View CEO inbox` to monitor escalations coming back to CEO.
-3. Use `6) Respond to a message` to answer escalations and unblock work.
+1. Choose `5) Send a message to a member` and send kickoff messages to `pm`, `analyst`, `engineer`, and `qa`.
+2. Use `3) View CEO inbox` to monitor escalations coming back to CEO.
+3. Use `4) Respond to a message` to answer escalations and unblock work.
 
 ### 4) Preview Which Members Will Run
 
 ```bash
-python3 TEAM_launch_ops/run.py --dry-run
+./TEAM_launch_ops/run --dry-run
 ```
 
 What this does:
@@ -262,28 +264,28 @@ What this does:
 Run one full round (concurrent by default):
 
 ```bash
-python3 TEAM_launch_ops/run.py --rounds 1
+./TEAM_launch_ops/run --rounds 1
 ```
 
 Run two rounds sequentially (easier to observe in order):
 
 ```bash
-python3 TEAM_launch_ops/run.py --rounds 2 --sequential
+./TEAM_launch_ops/run --rounds 2 --sequential
 ```
 
 ### 6) Handle Escalations During Runs
 
-If `run.py` pauses because CEO has unread messages:
+If `./TEAM_launch_ops/run` pauses because CEO has unread messages:
 
 1. Open the CEO CLI in another terminal: `./TEAM_launch_ops/ceo`
-2. Choose `5) View CEO inbox` and open unread messages.
-3. Choose `6) Respond to a message` when a reply is needed.
+2. Choose `3) View CEO inbox` and open unread messages.
+3. Choose `4) Respond to a message` when a reply is needed.
 4. Return to the paused runner and continue.
 
 If you intentionally want rounds to continue without waiting on CEO inbox, run with:
 
 ```bash
-python3 TEAM_launch_ops/run.py --ignore-ceo-messages
+./TEAM_launch_ops/run --ignore-ceo-messages
 ```
 
 ### 7) Ongoing Management Commands
@@ -291,13 +293,13 @@ python3 TEAM_launch_ops/run.py --ignore-ceo-messages
 Run only specific members:
 
 ```bash
-python3 TEAM_launch_ops/run.py --member pm --member engineer --rounds 1 --sequential
+./TEAM_launch_ops/run --member pm --member engineer --rounds 1 --sequential
 ```
 
 Run with explicit model/effort:
 
 ```bash
-python3 TEAM_launch_ops/run.py --model gpt-5.3-codex --reasoning-effort medium --rounds 1
+./TEAM_launch_ops/run --model gpt-5.3-codex --reasoning-effort medium --rounds 1
 ```
 
 Use CEO CLI continuously for oversight:
