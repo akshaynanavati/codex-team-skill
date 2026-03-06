@@ -93,6 +93,7 @@ Resulting structure:
 - `TEAM_<name>/state/`
 - `TEAM_<name>/mission.md`
 - `TEAM_<name>/ceo`
+- `TEAM_<name>/run`
 
 Rules:
 
@@ -105,6 +106,7 @@ python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<name-or-path>" init
 ```
 
 - `create` writes executable `TEAM_<name>/ceo` wrapper bound to that team.
+- `create` writes executable `TEAM_<name>/run` wrapper bound to that team.
 - Do not recruit members in this mode.
 
 ## Mode: Recruit

@@ -1,4 +1,4 @@
 interface:
   display_name: "Team"
   short_description: "Create, update, and run mission-driven teams"
-  default_prompt: "Create, recruit, update run.py, or execute one team member work round."
+  default_prompt: "Create, recruit, update the team run wrapper, or execute one team member work round."

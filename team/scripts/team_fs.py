@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 VALID_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
-RUNNER_TEMPLATE_FILENAME = "run.py"
-RUNNER_CUSTOM_MARKER = "# TEAM_RUN_CUSTOM_CHECKS"
+RUN_WRAPPER_FILENAME = "run"
+RUN_WRAPPER_CUSTOM_MARKER = "# TEAM_RUN_WRAPPER_CUSTOM_CHECKS"
 
 
 def fail(message: str) -> int:
@@ -50,25 +50,188 @@ def ceo_wrapper_template(team_root: Path) -> str:
     )
 
 
-def runner_template_path() -> Path:
-    return Path(__file__).resolve().parent / RUNNER_TEMPLATE_FILENAME
+def run_wrapper_template(team_root: Path) -> str:
+    team_root_literal = repr(str(team_root.resolve()))
+    return (
+        "#!/usr/bin/env python3\n"
+        '"""Team-local wrapper around the centralized team run scheduler."""\n\n'
+        "from __future__ import annotations\n\n"
+        "import os\n"
+        "import re\n"
+        "import sqlite3\n"
+        "import subprocess\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from typing import Callable\n\n"
+        'VALID_MEMBER = re.compile(r"^[A-Za-z0-9._-]+$")\n'
+        'DB_FILENAME = "team_state.sqlite3"\n'
+        "ShouldRunCheck = Callable[[sqlite3.Connection, str, Path], tuple[bool, str]]\n"
+        f"TEAM_ROOT = Path({team_root_literal}).resolve()\n\n"
+        "def normalize_member(value: str, label: str = \"member\") -> str:\n"
+        "    member = value.strip()\n"
+        "    if not member:\n"
+        "        raise ValueError(f\"{label} cannot be empty.\")\n"
+        "    if \"/\" in member or \"\\\\\" in member:\n"
+        "        raise ValueError(f\"{label} cannot contain path separators: {value!r}\")\n"
+        "    if not VALID_MEMBER.match(member):\n"
+        "        raise ValueError(\n"
+        "            f\"{label} must match {VALID_MEMBER.pattern} (letters, numbers, ., _, -).\"\n"
+        "        )\n"
+        "    return member.lower()\n\n"
+        "def discover_members(team_root: Path) -> dict[str, str]:\n"
+        "    members_dir = team_root / \"members\"\n"
+        "    if not members_dir.is_dir():\n"
+        "        return {}\n\n"
+        "    members: dict[str, str] = {}\n"
+        "    for child in sorted(members_dir.iterdir(), key=lambda path: path.name.lower()):\n"
+        "        if not child.is_dir():\n"
+        "            continue\n"
+        "        try:\n"
+        "            member_key = normalize_member(child.name)\n"
+        "        except ValueError:\n"
+        "            continue\n"
+        "        if member_key in members:\n"
+        "            continue\n"
+        "        members[member_key] = child.name\n"
+        "    return dict(sorted(members.items()))\n\n"
+        "def connect_database(team_root: Path) -> sqlite3.Connection:\n"
+        "    db_path = team_root / \"state\" / DB_FILENAME\n"
+        "    if not db_path.exists():\n"
+        "        raise FileNotFoundError(f\"team state database not found: {db_path}\")\n\n"
+        "    conn = sqlite3.connect(db_path, timeout=30.0)\n"
+        "    conn.row_factory = sqlite3.Row\n"
+        "    conn.execute(\"PRAGMA busy_timeout=30000;\")\n"
+        "    return conn\n\n"
+        "def count_unread_messages(conn: sqlite3.Connection, member: str) -> int:\n"
+        "    row = conn.execute(\n"
+        "        \"\"\"\n"
+        "        SELECT COUNT(*) AS c\n"
+        "        FROM messages\n"
+        "        WHERE receiver = ? AND status = 'unread'\n"
+        "        \"\"\",\n"
+        "        (member,),\n"
+        "    ).fetchone()\n"
+        "    return int(row[\"c\"]) if row is not None else 0\n\n"
+        "def count_actionable_tasks(conn: sqlite3.Connection, member: str) -> int:\n"
+        "    row = conn.execute(\n"
+        "        \"\"\"\n"
+        "        SELECT COUNT(*) AS c\n"
+        "        FROM tasks\n"
+        "        WHERE owner = ? AND state IN ('todo', 'in_progress')\n"
+        "        \"\"\",\n"
+        "        (member,),\n"
+        "    ).fetchone()\n"
+        "    return int(row[\"c\"]) if row is not None else 0\n\n"
+        "def default_should_run(conn: sqlite3.Connection, member: str, team_root: Path) -> tuple[bool, str]:\n"
+        "    del team_root\n"
+        "    unread_count = count_unread_messages(conn, member)\n"
+        "    actionable_count = count_actionable_tasks(conn, member)\n\n"
+        "    if unread_count == 0 and actionable_count == 0:\n"
+        "        return False, \"no unread messages and no todo/in_progress tasks\"\n\n"
+        "    reasons: list[str] = []\n"
+        "    if unread_count > 0:\n"
+        "        reasons.append(f\"{unread_count} unread message(s)\")\n"
+        "    if actionable_count > 0:\n"
+        "        reasons.append(f\"{actionable_count} todo/in_progress task(s)\")\n"
+        "    return True, \" and \".join(reasons)\n\n"
+        "SPECIAL_MEMBER_CHECKS: dict[str, ShouldRunCheck] = {\n"
+        "    # \"member-name\": should_run_member_name,\n"
+        "}\n"
+        f"{RUN_WRAPPER_CUSTOM_MARKER}\n\n"
+        "def should_run_member(conn: sqlite3.Connection, member: str, team_root: Path) -> tuple[bool, str]:\n"
+        "    checker = SPECIAL_MEMBER_CHECKS.get(member)\n"
+        "    if checker is None:\n"
+        "        return default_should_run(conn, member, team_root)\n\n"
+        "    try:\n"
+        "        should_run, reason = checker(conn, member, team_root)\n"
+        "    except Exception as exc:\n"
+        "        return True, f\"custom check failed ({exc!r}); running to avoid starvation\"\n\n"
+        "    if not isinstance(should_run, bool):\n"
+        "        return True, \"custom check returned non-bool decision; running to avoid starvation\"\n\n"
+        "    clean_reason = (reason or \"\").strip() or \"custom check\"\n"
+        "    return should_run, clean_reason\n\n"
+        "def collect_custom_member_filters(team_root: Path, members: dict[str, str]) -> tuple[set[str], set[str]]:\n"
+        "    if not SPECIAL_MEMBER_CHECKS:\n"
+        "        return set(), set()\n\n"
+        "    allow_members: set[str] = set()\n"
+        "    deny_members: set[str] = set()\n"
+        "    conn = connect_database(team_root)\n"
+        "    try:\n"
+        "        for member_key in sorted(SPECIAL_MEMBER_CHECKS):\n"
+        "            if member_key not in members:\n"
+        "                print(\n"
+        "                    f\"[WARN] custom run check references missing member '{member_key}'; skipping.\",\n"
+        "                    file=sys.stderr,\n"
+        "                )\n"
+        "                continue\n"
+        "            should_run, reason = should_run_member(conn, member_key, team_root)\n"
+        "            decision = \"allow\" if should_run else \"deny\"\n"
+        "            print(f\"[WRAP] custom decision {member_key}: {decision} ({reason})\", flush=True)\n"
+        "            if should_run:\n"
+        "                allow_members.add(member_key)\n"
+        "            else:\n"
+        "                deny_members.add(member_key)\n"
+        "    finally:\n"
+        "        conn.close()\n\n"
+        "    return allow_members, deny_members\n\n"
+        "def resolve_run_script() -> Path:\n"
+        "    codex_home = Path(os.environ.get(\"CODEX_HOME\", str(Path.home() / \".codex\")))\n"
+        "    return (codex_home / \"skills\" / \"team\" / \"scripts\" / \"run.py\").resolve()\n\n"
+        "def main() -> int:\n"
+        "    if not TEAM_ROOT.exists() or not TEAM_ROOT.is_dir():\n"
+        "        print(f\"[ERROR] team directory not found: {TEAM_ROOT}\", file=sys.stderr)\n"
+        "        return 1\n\n"
+        "    forwarded_args = list(sys.argv[1:])\n"
+        "    help_requested = any(arg in {\"-h\", \"--help\"} for arg in forwarded_args)\n"
+        "    allow_members: set[str] = set()\n"
+        "    deny_members: set[str] = set()\n"
+        "    if not help_requested:\n"
+        "        members = discover_members(TEAM_ROOT)\n"
+        "        try:\n"
+        "            allow_members, deny_members = collect_custom_member_filters(TEAM_ROOT, members)\n"
+        "        except (FileNotFoundError, sqlite3.Error, ValueError) as exc:\n"
+        "            print(f\"[ERROR] unable to evaluate custom run checks: {exc}\", file=sys.stderr)\n"
+        "            return 1\n\n"
+        "        overlap = sorted(allow_members & deny_members)\n"
+        "        if overlap:\n"
+        "            joined = \", \".join(overlap)\n"
+        "            print(\n"
+        "                f\"[ERROR] custom checks produced conflicting allow/deny decisions: {joined}\",\n"
+        "                file=sys.stderr,\n"
+        "            )\n"
+        "            return 1\n\n"
+        "    run_script = resolve_run_script()\n"
+        "    if not run_script.exists() or not run_script.is_file():\n"
+        "        print(f\"[ERROR] team run script not found: {run_script}\", file=sys.stderr)\n"
+        "        return 1\n\n"
+        "    command: list[str] = [\"python3\", str(run_script)]\n"
+        "    command.extend(forwarded_args)\n"
+        "    for member in sorted(allow_members):\n"
+        "        command.extend([\"--allow-member\", member])\n"
+        "    for member in sorted(deny_members):\n"
+        "        command.extend([\"--deny-member\", member])\n"
+        "    command.extend([\"--team\", str(TEAM_ROOT)])\n\n"
+        "    try:\n"
+        "        return subprocess.run(command, check=False).returncode\n"
+        "    except OSError as exc:\n"
+        "        print(f\"[ERROR] unable to launch team run script: {exc}\", file=sys.stderr)\n"
+        "        return 1\n\n"
+        "if __name__ == \"__main__\":\n"
+        "    raise SystemExit(main())\n"
+    )
 
 
-def write_team_runner(team_root: Path, overwrite: bool) -> None:
-    template_path = runner_template_path()
-    if not template_path.exists() or not template_path.is_file():
-        raise FileNotFoundError(f"team runner template not found: {template_path}")
-
-    run_path = team_root / "run.py"
+def write_team_run_wrapper(team_root: Path, overwrite: bool) -> None:
+    run_path = team_root / RUN_WRAPPER_FILENAME
     if run_path.exists() and run_path.is_dir():
-        raise ValueError(f"runner target exists as a directory: {run_path}")
+        raise ValueError(f"run wrapper target exists as a directory: {run_path}")
     if run_path.exists() and not overwrite:
-        print(f"[SKIP] runner exists: {run_path}")
+        print(f"[SKIP] run wrapper exists: {run_path}")
         return
 
-    run_path.write_text(template_path.read_text(encoding="utf-8"), encoding="utf-8")
+    run_path.write_text(run_wrapper_template(team_root), encoding="utf-8")
     run_path.chmod(0o755)
-    print(f"[OK] wrote runner: {run_path}")
+    print(f"[OK] wrote run wrapper: {run_path}")
 
 
 def member_identity(member_name: str) -> str:
@@ -112,11 +275,11 @@ def build_custom_run_check_snippet(member: str, criteria: str) -> str:
 
 
 def ensure_member_custom_run_check(team_root: Path, member: str, criteria: str) -> None:
-    run_path = team_root / "run.py"
+    run_path = team_root / RUN_WRAPPER_FILENAME
     if not run_path.exists():
-        write_team_runner(team_root, overwrite=False)
+        write_team_run_wrapper(team_root, overwrite=False)
     if not run_path.exists() or not run_path.is_file():
-        raise FileNotFoundError(f"team runner not found: {run_path}")
+        raise FileNotFoundError(f"team run wrapper not found: {run_path}")
 
     member_id = member_identity(member)
     registration = f'SPECIAL_MEMBER_CHECKS["{member_id}"] = '
@@ -125,15 +288,17 @@ def ensure_member_custom_run_check(team_root: Path, member: str, criteria: str) 
     if registration in source:
         print(f"[SKIP] custom run check already exists for member '{member_id}': {run_path}")
         return
-    if RUNNER_CUSTOM_MARKER not in source:
+    if RUN_WRAPPER_CUSTOM_MARKER not in source:
         raise ValueError(
-            f"runner is missing expected marker '{RUNNER_CUSTOM_MARKER}': {run_path}"
+            f"run wrapper is missing expected marker '{RUN_WRAPPER_CUSTOM_MARKER}': {run_path}"
         )
 
     snippet = build_custom_run_check_snippet(member_id, criteria)
-    updated = source.replace(RUNNER_CUSTOM_MARKER, f"{snippet}{RUNNER_CUSTOM_MARKER}", 1)
+    updated = source.replace(
+        RUN_WRAPPER_CUSTOM_MARKER, f"{snippet}{RUN_WRAPPER_CUSTOM_MARKER}", 1
+    )
     run_path.write_text(updated, encoding="utf-8")
-    print(f"[OK] added custom run check for member '{member_id}': {run_path}")
+    print(f"[OK] added custom run check for member '{member_id}' in run wrapper: {run_path}")
 
 
 def resolve_team_root(team: str, base: Path) -> Path:
@@ -183,7 +348,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         print(f"[OK] wrote ceo wrapper: {ceo_wrapper_path}")
 
     try:
-        write_team_runner(team_root, overwrite=args.overwrite_runner)
+        write_team_run_wrapper(team_root, overwrite=args.overwrite_run_wrapper)
     except (FileNotFoundError, OSError, ValueError) as exc:
         return fail(str(exc))
 
@@ -261,9 +426,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overwrite TEAM_<name>/ceo if it already exists.",
     )
     create_parser.add_argument(
-        "--overwrite-runner",
+        "--overwrite-run-wrapper",
+        dest="overwrite_run_wrapper",
         action="store_true",
-        help="Overwrite TEAM_<name>/run.py if it already exists.",
+        help="Overwrite TEAM_<name>/run if it already exists.",
+    )
+    create_parser.add_argument(
+        "--overwrite-runner",
+        dest="overwrite_run_wrapper",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     create_parser.set_defaults(func=cmd_create)
 
@@ -289,7 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=(
             "Optional member-specific run criteria text. When provided, "
-            "TEAM_<name>/run.py is updated with a custom check stub for this member."
+            "TEAM_<name>/run is updated with a custom check stub for this member."
         ),
     )
     recruit_parser.set_defaults(func=cmd_recruit)

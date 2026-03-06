@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Run team members that currently need a work round.
 
-This file is copied to TEAM_<name>/run.py during team creation and is designed
-to be customized per team.
+This script lives in the skill and is invoked via TEAM_<name>/run wrappers.
 """
 
 from __future__ import annotations
@@ -16,15 +15,12 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
 
 VALID_MEMBER = re.compile(r"^[A-Za-z0-9._-]+$")
 DB_FILENAME = "team_state.sqlite3"
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
 CEO_UNREAD_PREVIEW_LIMIT = 10
 MESSAGE_BODY_PREVIEW_WIDTH = 96
-
-ShouldRunCheck = Callable[[sqlite3.Connection, str, Path], tuple[bool, str]]
 
 
 def fail(message: str) -> int:
@@ -250,29 +246,6 @@ def default_should_run(conn: sqlite3.Connection, member: str, team_root: Path) -
     return True, " and ".join(reasons)
 
 
-SPECIAL_MEMBER_CHECKS: dict[str, ShouldRunCheck] = {
-    # "member-name": should_run_member_name,
-}
-# TEAM_RUN_CUSTOM_CHECKS
-
-
-def should_run_member(conn: sqlite3.Connection, member: str, team_root: Path) -> tuple[bool, str]:
-    checker = SPECIAL_MEMBER_CHECKS.get(member)
-    if checker is None:
-        return default_should_run(conn, member, team_root)
-
-    try:
-        should_run, reason = checker(conn, member, team_root)
-    except Exception as exc:
-        return True, f"custom check failed ({exc!r}); running to avoid starvation"
-
-    if not isinstance(should_run, bool):
-        return True, "custom check returned non-bool decision; running to avoid starvation"
-
-    clean_reason = (reason or "").strip() or "custom check"
-    return should_run, clean_reason
-
-
 def build_execute_prompt(member: str, team_root: Path) -> str:
     return (
         "Use $team in execute mode only. "
@@ -313,7 +286,7 @@ def parse_args() -> argparse.Namespace:
         "--team",
         default=None,
         help=(
-            "Team name or path. Defaults to the directory containing this script "
+            "Team name or path. Defaults to the current working directory "
             "(expected TEAM_<name>/)."
         ),
     )
@@ -322,7 +295,25 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help=(
-            "Run only this member identity. Repeat to select multiple members. "
+            "Limit evaluation to this member identity. Repeat to select multiple members. "
+            "Member matching is case-insensitive."
+        ),
+    )
+    parser.add_argument(
+        "--allow-member",
+        action="append",
+        default=[],
+        help=(
+            "Force a member to run this invocation. Repeat to force multiple members. "
+            "Member matching is case-insensitive."
+        ),
+    )
+    parser.add_argument(
+        "--deny-member",
+        action="append",
+        default=[],
+        help=(
+            "Prevent a member from running this invocation. Repeat to skip multiple members. "
             "Member matching is case-insensitive."
         ),
     )
@@ -402,7 +393,7 @@ def main() -> int:
     if args.rounds <= 0:
         return fail("--rounds must be greater than 0.")
 
-    default_team_root = Path(__file__).resolve().parent
+    default_team_root = Path.cwd()
     team_root = resolve_team_root(args.team, default_team_root)
     if not team_root.exists() or not team_root.is_dir():
         return fail(f"team directory not found: {team_root}")
@@ -415,14 +406,22 @@ def main() -> int:
         return fail(f"no members found under: {team_root / 'members'}")
 
     selected_members: set[str]
+    allow_members: set[str]
+    deny_members: set[str]
     try:
         selected_members = {normalize_member(raw, "member filter") for raw in args.member}
+        allow_members = {normalize_member(raw, "allow-member filter") for raw in args.allow_member}
+        deny_members = {normalize_member(raw, "deny-member filter") for raw in args.deny_member}
     except ValueError as exc:
         return fail(str(exc))
 
-    unknown = sorted(selected_members - set(members))
+    unknown = sorted((selected_members | allow_members | deny_members) - set(members))
     if unknown:
         return fail(f"unknown member filter(s): {', '.join(unknown)}")
+
+    overlap = sorted(allow_members & deny_members)
+    if overlap:
+        return fail(f"member(s) cannot be both allowed and denied: {', '.join(overlap)}")
 
     member_keys = [key for key in members if not selected_members or key in selected_members]
     if not member_keys:
@@ -477,7 +476,23 @@ def main() -> int:
             # Re-evaluate who should run at the start of each round.
             for member_key in member_keys:
                 member_dir_name = members[member_key]
-                should_run, reason = should_run_member(conn, member_key, team_root)
+                if member_key in deny_members:
+                    reason = "excluded by --deny-member"
+                    summary["skipped"].append(
+                        {
+                            "round": round_number,
+                            "member": member_key,
+                            "member_dir": member_dir_name,
+                            "reason": reason,
+                        }
+                    )
+                    print(f"[SKIP] round={round_number} {member_key}: {reason}")
+                    continue
+
+                if member_key in allow_members:
+                    should_run, reason = True, "forced by --allow-member"
+                else:
+                    should_run, reason = default_should_run(conn, member_key, team_root)
 
                 if not should_run:
                     summary["skipped"].append(
