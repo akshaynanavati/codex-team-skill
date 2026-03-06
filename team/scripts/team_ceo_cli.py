@@ -97,6 +97,7 @@ class ScreenEntry:
 class ScreenResult:
     action: str
     screen: ScreenEntry | None = None
+    history_entry: ScreenEntry | None = None
 
 
 class ScreenHistory:
@@ -129,6 +130,12 @@ class ScreenHistory:
             return None
         self._index += 1
         return self._entries[self._index]
+
+    def replace_current(self, entry: ScreenEntry) -> None:
+        if self._index < 0:
+            self.visit(entry)
+            return
+        self._entries[self._index] = entry
 
 
 def fail(message: str) -> int:
@@ -2159,22 +2166,36 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
 
 
 def screen_task_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
-    if len(screen.params) >= 4:
+    if len(screen.params) >= 5:
+        owner, scope, text, limit, selected_index = (
+            str(screen.params[0]),
+            str(screen.params[1]),
+            str(screen.params[2]),
+            int(screen.params[3]),
+            max(0, int(screen.params[4])),
+        )
+    elif len(screen.params) >= 4:
         owner, scope, text, limit = (
             str(screen.params[0]),
             str(screen.params[1]),
             str(screen.params[2]),
             int(screen.params[3]),
         )
+        selected_index = 0
     else:
         owner_raw, scope, limit = screen.params
         owner = str(owner_raw) if owner_raw else ""
         text = ""
         scope = str(scope)
         limit = int(limit)
-
-    selected_index = 0
+        selected_index = 0
     notice = ""
+
+    def current_history_entry() -> ScreenEntry:
+        return ScreenEntry(
+            SCREEN_TASK_LIST,
+            (owner, scope, text, limit, selected_index),
+        )
 
     hotkeys = {
         "/": ACTION_FILTER_TEXT,
@@ -2228,14 +2249,18 @@ def screen_task_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenRes
             selected_index = selection.index
 
         if selection.action == ACTION_BACK:
-            return ScreenResult(ACTION_BACK)
+            return ScreenResult(ACTION_BACK, history_entry=current_history_entry())
         if selection.action == ACTION_FORWARD:
-            return ScreenResult(ACTION_FORWARD)
+            return ScreenResult(ACTION_FORWARD, history_entry=current_history_entry())
         if selection.action == ACTION_CANCEL:
-            return ScreenResult(ACTION_CANCEL)
+            return ScreenResult(ACTION_CANCEL, history_entry=current_history_entry())
         if selection.action == ACTION_SELECT and selection.index is not None:
             task_id = str(rows[selection.index]["task_id"])
-            return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_TASK_DETAIL, (task_id,)))
+            return ScreenResult(
+                ACTION_OPEN,
+                ScreenEntry(SCREEN_TASK_DETAIL, (task_id,)),
+                history_entry=current_history_entry(),
+            )
         if selection.action == ACTION_FILTER_SCOPE:
             scope = cycle_choice(scope, TASK_SCOPE_CHOICES)
             notice = f"scope -> {scope}"
@@ -2322,12 +2347,13 @@ def query_message_rows_for_screen(
 
 def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
     if len(screen.params) >= 5 and str(screen.params[0]) in {"all", "member"}:
-        mode, member, scope, sender, limit = screen.params
+        mode, member, scope, sender, limit = screen.params[:5]
         receiver = "" if str(mode) == "all" else str(member)
         text = ""
         sender = str(sender)
         scope = str(scope)
         limit = int(limit)
+        selected_index = max(0, int(screen.params[5])) if len(screen.params) >= 6 else 0
     else:
         sender, receiver, scope, text, limit = (
             str(screen.params[0]),
@@ -2336,9 +2362,14 @@ def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> Screen
             str(screen.params[3]),
             int(screen.params[4]),
         )
-
-    selected_index = 0
+        selected_index = max(0, int(screen.params[5])) if len(screen.params) >= 6 else 0
     notice = ""
+
+    def current_history_entry() -> ScreenEntry:
+        return ScreenEntry(
+            SCREEN_MESSAGE_LIST,
+            (sender, receiver, scope, text, limit, selected_index),
+        )
 
     hotkeys = {
         "/": ACTION_FILTER_TEXT,
@@ -2404,14 +2435,18 @@ def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> Screen
             selected_index = selection.index
 
         if selection.action == ACTION_BACK:
-            return ScreenResult(ACTION_BACK)
+            return ScreenResult(ACTION_BACK, history_entry=current_history_entry())
         if selection.action == ACTION_FORWARD:
-            return ScreenResult(ACTION_FORWARD)
+            return ScreenResult(ACTION_FORWARD, history_entry=current_history_entry())
         if selection.action == ACTION_CANCEL:
-            return ScreenResult(ACTION_CANCEL)
+            return ScreenResult(ACTION_CANCEL, history_entry=current_history_entry())
         if selection.action == ACTION_SELECT and selection.index is not None:
             message_id = str(rows[selection.index]["message_id"])
-            return ScreenResult(ACTION_OPEN, ScreenEntry(SCREEN_MESSAGE_DETAIL, (message_id,)))
+            return ScreenResult(
+                ACTION_OPEN,
+                ScreenEntry(SCREEN_MESSAGE_DETAIL, (message_id,)),
+                history_entry=current_history_entry(),
+            )
         if selection.action == ACTION_FILTER_SCOPE:
             scope = cycle_choice(scope, MESSAGE_SCOPE_CYCLE)
             notice = f"scope -> {scope}"
@@ -2573,6 +2608,10 @@ def run_tui(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> int:
 
     while True:
         outcome = run_screen(conn, team_root, db_path, current)
+
+        if outcome.history_entry is not None:
+            current = outcome.history_entry
+            history.replace_current(current)
 
         if outcome.action == ACTION_QUIT:
             clear_screen()
