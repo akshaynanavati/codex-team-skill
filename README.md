@@ -180,7 +180,7 @@ Navigation controls:
 - Press `Enter` on a hovered ID (full UUID or unique suffix) to open the linked task/message.
 - Message detail includes a `tasks_created_from_message` section; press `Enter` on a hovered `task_id` there to jump to task detail.
 - In CEO inbox message detail views, press `r` to open an inline reply draft panel below the open message.
-- In the reply draft panel, use `F2` to send and `F1` to discard the draft and return to the message view (`Ctrl-S`/`Ctrl-Q` are also supported when the terminal allows them).
+- In reply and compose draft panels, use arrow keys to move the cursor, `F2` to send, and `F1` to discard (`Ctrl-S`/`Ctrl-Q` are also supported when the terminal allows them).
 
 ### Inbox and Status Behavior
 

@@ -55,6 +55,8 @@ KEY_CTRL_S = "ctrl_s"
 KEY_BACKSPACE = "backspace"
 KEY_F1 = "f1"
 KEY_F2 = "f2"
+ESCAPE_SEQUENCE_TIMEOUT = 0.05
+ESCAPE_SEQUENCE_MAX_CHARS = 8
 
 ACTION_SELECT = "select"
 ACTION_CANCEL = "cancel"
@@ -270,37 +272,78 @@ def read_keypress(fd: int) -> str:
             return char
         return ""
 
-    ready, _, _ = select.select([fd], [], [], 0.02)
-    if not ready:
-        return KEY_ESCAPE
+    return decode_escape_key(fd)
 
-    second = os.read(fd, 1)
+
+def read_escape_fragment(fd: int, timeout: float = ESCAPE_SEQUENCE_TIMEOUT) -> bytes | None:
+    ready, _, _ = select.select([fd], [], [], timeout)
+    if not ready:
+        return None
+    chunk = os.read(fd, 1)
+    return chunk or None
+
+
+def parse_escape_token(prefix: str, token: str) -> str:
+    if not token:
+        return ""
+
+    tail = token[-1]
+    if tail == "A":
+        return KEY_UP
+    if tail == "B":
+        return KEY_DOWN
+    if tail == "C":
+        return KEY_RIGHT
+    if tail == "D":
+        return KEY_LEFT
+
+    if tail == "~":
+        base = token[:-1].split(";", 1)[0]
+        if base == "5":
+            return KEY_PAGE_UP
+        if base == "6":
+            return KEY_PAGE_DOWN
+        if base == "11":
+            return KEY_F1
+        if base == "12":
+            return KEY_F2
+
+    if prefix == "O":
+        if token.startswith("P"):
+            return KEY_F1
+        if token.startswith("Q"):
+            return KEY_F2
+
+    return ""
+
+
+def decode_escape_key(fd: int) -> str:
+    second = read_escape_fragment(fd)
+    if second is None:
+        return KEY_ESCAPE
     if second not in {b"[", b"O"}:
         return KEY_ESCAPE
 
-    ready, _, _ = select.select([fd], [], [], 0.02)
-    if not ready:
+    third = read_escape_fragment(fd)
+    if third is None:
         return KEY_ESCAPE
 
-    third = os.read(fd, 1)
-    if third == b"A":
-        return KEY_UP
-    if third == b"B":
-        return KEY_DOWN
-    if third == b"C":
-        return KEY_RIGHT
-    if third == b"D":
-        return KEY_LEFT
-    if third == b"5":
-        ready, _, _ = select.select([fd], [], [], 0.02)
-        if ready:
-            os.read(fd, 1)
-        return KEY_PAGE_UP
-    if third == b"6":
-        ready, _, _ = select.select([fd], [], [], 0.02)
-        if ready:
-            os.read(fd, 1)
-        return KEY_PAGE_DOWN
+    prefix = second.decode("ascii", errors="ignore")
+    token = third.decode("ascii", errors="ignore")
+    for _ in range(ESCAPE_SEQUENCE_MAX_CHARS):
+        if not token:
+            break
+        tail = token[-1]
+        if tail.isalpha() or tail == "~":
+            break
+        chunk = read_escape_fragment(fd)
+        if chunk is None:
+            break
+        token += chunk.decode("ascii", errors="ignore")
+
+    parsed = parse_escape_token(prefix, token)
+    if parsed:
+        return parsed
     return ""
 
 
@@ -320,70 +363,9 @@ def read_editor_key(fd: int) -> tuple[str, str]:
         return "char", "    "
 
     if first == b"\x1b":
-        ready, _, _ = select.select([fd], [], [], 0.02)
-        if not ready:
-            return KEY_ESCAPE, ""
-
-        second = os.read(fd, 1)
-        if second not in {b"[", b"O"}:
-            return KEY_ESCAPE, ""
-
-        ready, _, _ = select.select([fd], [], [], 0.02)
-        if not ready:
-            return KEY_ESCAPE, ""
-
-        third = os.read(fd, 1)
-        if second == b"O":
-            if third == b"P":
-                return KEY_F1, ""
-            if third == b"Q":
-                return KEY_F2, ""
-            if third == b"A":
-                return KEY_UP, ""
-            if third == b"B":
-                return KEY_DOWN, ""
-            if third == b"C":
-                return KEY_RIGHT, ""
-            if third == b"D":
-                return KEY_LEFT, ""
-            return "", ""
-
-        if third == b"A":
-            return KEY_UP, ""
-        if third == b"B":
-            return KEY_DOWN, ""
-        if third == b"C":
-            return KEY_RIGHT, ""
-        if third == b"D":
-            return KEY_LEFT, ""
-        if third.isdigit():
-            sequence = third.decode("ascii")
-            terminator = ""
-            for _ in range(4):
-                ready, _, _ = select.select([fd], [], [], 0.02)
-                if not ready:
-                    break
-                ch = os.read(fd, 1)
-                if not ch:
-                    break
-                decoded = ch.decode("ascii", errors="ignore")
-                if decoded in "~":
-                    terminator = decoded
-                    break
-                if decoded.isdigit():
-                    sequence += decoded
-                else:
-                    terminator = decoded
-                    break
-            token = f"{sequence}{terminator}"
-            if token == "5~":
-                return KEY_PAGE_UP, ""
-            if token == "6~":
-                return KEY_PAGE_DOWN, ""
-            if token == "11~":
-                return KEY_F1, ""
-            if token == "12~":
-                return KEY_F2, ""
+        decoded = decode_escape_key(fd)
+        if decoded:
+            return decoded, ""
         return "", ""
 
     try:
@@ -1266,19 +1248,23 @@ def compose_reply_for_message_prompt(
     return True
 
 
-def compose_reply_panel(
+def compose_message_panel(
     conn: sqlite3.Connection,
-    original: sqlite3.Row,
     receiver: str,
     subject: str,
     task_id: str | None,
+    title: str,
+    sent_heading: str,
+    sent_id_label: str,
+    reference_lines: list[str] | None = None,
 ) -> bool:
-    message_lines = build_message_detail_lines(original)
+    context_lines = reference_lines or []
+    has_context = bool(context_lines)
     draft_lines = [""]
     cursor_line = 0
     cursor_col = 0
     draft_top = 0
-    message_top = 0
+    context_top = 0
     status_line = ""
 
     with RawKeyboardSession() as fd:
@@ -1286,10 +1272,15 @@ def compose_reply_panel(
             term_size = shutil.get_terminal_size(fallback=(100, 24))
             total_lines = max(12, term_size.lines)
             separator = "-" * max(20, min(term_size.columns, 120))
-            draft_height = max(4, min(10, total_lines // 3))
-            message_height = max(4, total_lines - draft_height - 9)
-            max_message_top = max(0, len(message_lines) - message_height)
-            message_top = max(0, min(message_top, max_message_top))
+            if has_context:
+                draft_height = max(4, min(10, total_lines // 3))
+                context_height = max(4, total_lines - draft_height - 9)
+                max_context_top = max(0, len(context_lines) - context_height)
+                context_top = max(0, min(context_top, max_context_top))
+            else:
+                context_height = 0
+                max_context_top = 0
+                draft_height = max(6, total_lines - 8)
 
             if cursor_line < draft_top:
                 draft_top = cursor_line
@@ -1299,18 +1290,21 @@ def compose_reply_panel(
             draft_top = max(0, min(draft_top, max_draft_top))
 
             clear_screen()
-            print("Reply Draft (message above, draft below)")
-            print(
-                "F2 send | F1 cancel draft and return | Ctrl-S/Ctrl-Q also supported | PgUp/PgDn scroll message pane"
+            print(title)
+            controls = (
+                "F2 send | F1 cancel draft and return | Ctrl-S/Ctrl-Q also supported | Arrows move cursor"
             )
+            if has_context:
+                controls += " | PgUp/PgDn scroll message pane"
+            print(controls)
             print()
 
-            for index in range(message_top, min(len(message_lines), message_top + message_height)):
-                print(message_lines[index])
-            for _ in range(message_height - len(message_lines[message_top : message_top + message_height])):
-                print()
-
-            print(separator)
+            if has_context:
+                for index in range(context_top, min(len(context_lines), context_top + context_height)):
+                    print(context_lines[index])
+                for _ in range(context_height - len(context_lines[context_top : context_top + context_height])):
+                    print()
+                print(separator)
             print(f"to: {receiver} | subject: {subject} | task_id: {task_id or '-'}")
 
             for index in range(draft_top, min(len(draft_lines), draft_top + draft_height)):
@@ -1338,10 +1332,10 @@ def compose_reply_panel(
                 if not body:
                     status_line = "Draft body cannot be empty."
                     continue
-                reply_id = send_ceo_message(conn, receiver, subject, body, task_id)
+                message_id = send_ceo_message(conn, receiver, subject, body, task_id)
                 clear_screen()
-                print("Reply sent.")
-                print(f"reply_id: {reply_id}")
+                print(sent_heading)
+                print(f"{sent_id_label}: {message_id}")
                 print("from: ceo")
                 print(f"to: {receiver}")
                 pause()
@@ -1406,12 +1400,33 @@ def compose_reply_panel(
                 continue
 
             if key == KEY_PAGE_UP:
-                message_top = max(0, message_top - message_height)
+                if has_context:
+                    context_top = max(0, context_top - context_height)
                 continue
 
             if key == KEY_PAGE_DOWN:
-                message_top = min(max_message_top, message_top + message_height)
+                if has_context:
+                    context_top = min(max_context_top, context_top + context_height)
                 continue
+
+
+def compose_reply_panel(
+    conn: sqlite3.Connection,
+    original: sqlite3.Row,
+    receiver: str,
+    subject: str,
+    task_id: str | None,
+) -> bool:
+    return compose_message_panel(
+        conn=conn,
+        receiver=receiver,
+        subject=subject,
+        task_id=task_id,
+        title="Reply Draft (message above, draft below)",
+        sent_heading="Reply sent.",
+        sent_id_label="reply_id",
+        reference_lines=build_message_detail_lines(original),
+    )
 
 
 def compose_reply_for_message(conn: sqlite3.Connection, original: sqlite3.Row) -> bool:
@@ -1889,6 +1904,18 @@ def send_message_to_member(conn: sqlite3.Connection, team_root: Path) -> None:
             return
     else:
         task_id = None
+
+    if supports_interactive_navigation():
+        compose_message_panel(
+            conn=conn,
+            receiver=receiver,
+            subject=subject,
+            task_id=task_id,
+            title="Compose Message Draft",
+            sent_heading="Message sent.",
+            sent_id_label="message_id",
+        )
+        return
 
     try:
         body = prompt_multiline("Message body")
