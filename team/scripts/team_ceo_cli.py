@@ -50,6 +50,7 @@ KEY_QUIT = "quit"
 KEY_BACK = "back"
 KEY_FORWARD = "forward"
 KEY_REPLY = "reply"
+KEY_MESSAGE_FORWARD = "message_forward"
 KEY_CTRL_Q = "ctrl_q"
 KEY_CTRL_S = "ctrl_s"
 KEY_BACKSPACE = "backspace"
@@ -74,6 +75,7 @@ ACTION_FILTER_LIMIT = "filter_limit"
 ACTION_FILTER_CLEAR = "filter_clear"
 ACTION_ARCHIVE_HOVERED = "archive_hovered"
 ACTION_UNARCHIVE_HOVERED = "unarchive_hovered"
+ACTION_MESSAGE_FORWARD = "message_forward"
 
 SCREEN_MENU = "menu"
 SCREEN_TASK_LIST = "task_list"
@@ -82,6 +84,17 @@ SCREEN_MESSAGE_LIST = "message_list"
 SCREEN_MESSAGE_DETAIL = "message_detail"
 
 ID_TOKEN_RE = re.compile(r"^[0-9a-fA-F-]{2,36}$")
+REFERENCE_PREFIX_KIND = {
+    "m": "message",
+    "msg": "message",
+    "message": "message",
+    "message_id": "message",
+    "message-id": "message",
+    "t": "task",
+    "task": "task",
+    "task_id": "task",
+    "task-id": "task",
+}
 
 
 class SelectionResult(NamedTuple):
@@ -256,6 +269,8 @@ def read_keypress(fd: int) -> str:
         return KEY_FORWARD
     if first in {b"r", b"R"}:
         return KEY_REPLY
+    if first in {b"w", b"W"}:
+        return KEY_MESSAGE_FORWARD
     if first in {b"k", b"K"}:
         return KEY_UP
     if first in {b"j", b"J"}:
@@ -709,6 +724,16 @@ def normalize_reference_token(token: str) -> str:
     return token.strip("`'\".,;:()[]{}<>…")
 
 
+def split_reference_token(token: str) -> tuple[str | None, str]:
+    if ":" not in token:
+        return None, token
+    raw_prefix, raw_value = token.split(":", 1)
+    kind = REFERENCE_PREFIX_KIND.get(raw_prefix.strip().lower())
+    if kind is None:
+        return None, token
+    return kind, normalize_reference_token(raw_value)
+
+
 def resolve_reference_target(
     conn: sqlite3.Connection,
     raw_token: str,
@@ -716,7 +741,44 @@ def resolve_reference_target(
     token = normalize_reference_token(raw_token)
     if not token:
         return None
+    kind, token = split_reference_token(token)
+    if not token:
+        return None
     token_lower = token.lower()
+
+    if kind == "task":
+        exact_task = conn.execute(
+            "SELECT task_id FROM tasks WHERE lower(task_id) = ? LIMIT 1",
+            (token_lower,),
+        ).fetchone()
+        if exact_task:
+            return ScreenEntry(SCREEN_TASK_DETAIL, (exact_task["task_id"],))
+        if not ID_TOKEN_RE.match(token_lower):
+            return None
+        task_matches = conn.execute(
+            "SELECT task_id FROM tasks WHERE lower(task_id) LIKE ? ORDER BY task_id ASC LIMIT 3",
+            (f"%{token_lower}",),
+        ).fetchall()
+        if len(task_matches) != 1:
+            return None
+        return ScreenEntry(SCREEN_TASK_DETAIL, (task_matches[0]["task_id"],))
+
+    if kind == "message":
+        exact_message = conn.execute(
+            "SELECT message_id FROM messages WHERE lower(message_id) = ? LIMIT 1",
+            (token_lower,),
+        ).fetchone()
+        if exact_message:
+            return ScreenEntry(SCREEN_MESSAGE_DETAIL, (exact_message["message_id"],))
+        if not ID_TOKEN_RE.match(token_lower):
+            return None
+        message_matches = conn.execute(
+            "SELECT message_id FROM messages WHERE lower(message_id) LIKE ? ORDER BY message_id ASC LIMIT 3",
+            (f"%{token_lower}",),
+        ).fetchall()
+        if len(message_matches) != 1:
+            return None
+        return ScreenEntry(SCREEN_MESSAGE_DETAIL, (message_matches[0]["message_id"],))
 
     exact_task = conn.execute(
         "SELECT task_id FROM tasks WHERE lower(task_id) = ? LIMIT 1",
@@ -760,6 +822,7 @@ def interactive_readonly_view(
     title_lines: list[str],
     content_lines: list[str],
     can_reply: bool = False,
+    can_forward_message: bool = False,
 ) -> ScreenResult:
     if not supports_interactive_navigation():
         clear_screen()
@@ -770,6 +833,8 @@ def interactive_readonly_view(
             print(line)
         if can_reply:
             print("\nReply is available from this view only in interactive mode.")
+        if can_forward_message:
+            print("\nForward is available from this view only in interactive mode.")
         pause()
         return ScreenResult(ACTION_CANCEL)
 
@@ -805,6 +870,8 @@ def interactive_readonly_view(
             controls = "Arrows scroll cursor | Enter open hovered ID | b/f history | q close"
             if can_reply:
                 controls += " | r reply"
+            if can_forward_message:
+                controls += " | w forward message"
             print()
             print(controls)
 
@@ -841,6 +908,8 @@ def interactive_readonly_view(
                 return ScreenResult(ACTION_CANCEL)
             elif key == KEY_REPLY and can_reply:
                 return ScreenResult("reply")
+            elif key == KEY_MESSAGE_FORWARD and can_forward_message:
+                return ScreenResult(ACTION_MESSAGE_FORWARD)
             elif key == KEY_ENTER:
                 if token_index < 0:
                     continue
@@ -1257,10 +1326,13 @@ def compose_message_panel(
     sent_heading: str,
     sent_id_label: str,
     reference_lines: list[str] | None = None,
+    initial_body: str | None = None,
 ) -> bool:
     context_lines = reference_lines or []
     has_context = bool(context_lines)
-    draft_lines = [""]
+    draft_lines = initial_body.splitlines() if initial_body is not None else [""]
+    if not draft_lines:
+        draft_lines = [""]
     cursor_line = 0
     cursor_col = 0
     draft_top = 0
@@ -1426,6 +1498,38 @@ def compose_reply_panel(
         sent_heading="Reply sent.",
         sent_id_label="reply_id",
         reference_lines=build_message_detail_lines(original),
+    )
+
+
+def compose_forward_for_message(conn: sqlite3.Connection, original: sqlite3.Row) -> bool:
+    receiver_raw = prompt_line("Forward receiver", None).strip()
+    try:
+        receiver = runtime.normalize_identity(receiver_raw, "receiver")
+    except ValueError as exc:
+        print(exc)
+        pause()
+        return False
+
+    subject_raw = str(original["subject"] or "").strip()
+    subject = f"FWD: {subject_raw}" if subject_raw else "FWD:"
+    task_id = str(original["task_id"]) if original["task_id"] else None
+    initial_body = str(original["body"] or "")
+
+    if not supports_interactive_navigation():
+        print("Forward compose panel requires interactive navigation support.")
+        pause()
+        return False
+
+    return compose_message_panel(
+        conn=conn,
+        receiver=receiver,
+        subject=subject,
+        task_id=task_id,
+        title="Forward Draft (message above, draft below)",
+        sent_heading="Forwarded message sent.",
+        sent_id_label="message_id",
+        reference_lines=build_message_detail_lines(original),
+        initial_body=initial_body,
     )
 
 
@@ -2146,7 +2250,6 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
         "View tasks table",
         "View messages table",
         "View CEO inbox",
-        "Respond to a message",
         "Send a message to a member",
         "Quit",
     ]
@@ -2182,11 +2285,6 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
             ScreenEntry(SCREEN_MESSAGE_LIST, ("", "ceo", "inbox", "", DEFAULT_TABLE_LIMIT)),
         )
     if choice == 3:
-        return ScreenResult(
-            ACTION_OPEN,
-            ScreenEntry(SCREEN_MESSAGE_LIST, ("", "ceo", "all", "", DEFAULT_TABLE_LIMIT)),
-        )
-    if choice == 4:
         send_message_to_member(conn, team_root)
         return ScreenResult(ACTION_STAY)
     return ScreenResult(ACTION_QUIT)
@@ -2407,6 +2505,7 @@ def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> Screen
         "c": ACTION_FILTER_CLEAR,
         "a": ACTION_ARCHIVE_HOVERED,
         "u": ACTION_UNARCHIVE_HOVERED,
+        KEY_MESSAGE_FORWARD: ACTION_MESSAGE_FORWARD,
     }
 
     while True:
@@ -2454,7 +2553,7 @@ def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> Screen
             id_key="message_id",
             hotkeys=hotkeys,
             hotkey_help=(
-                "Hotkeys: / text | o from | d to | s scope cycle | l limit | c clear | a archive hovered | u unarchive hovered"
+                "Hotkeys: / text | o from | d to | s scope cycle | l limit | c clear | a archive hovered | u unarchive hovered | w forward hovered"
             ),
             initial_index=selected_index,
         )
@@ -2505,6 +2604,28 @@ def screen_message_list(conn: sqlite3.Connection, screen: ScreenEntry) -> Screen
             text = ""
             limit = DEFAULT_TABLE_LIMIT
             notice = "filters reset"
+            continue
+        if selection.action == ACTION_MESSAGE_FORWARD:
+            if selection.index is None or not rows:
+                notice = "No hovered row."
+                continue
+
+            message_id = str(rows[selection.index]["message_id"])
+            if str(rows[selection.index]["receiver"]) != "ceo":
+                notice = "Forward is available only for CEO inbox messages."
+                continue
+
+            original = read_message(conn, message_id)
+            if original is None:
+                notice = "Message not found."
+                continue
+
+            sent = compose_forward_for_message(conn, original)
+            notice = (
+                f"forwarded {short_id(message_id)}"
+                if sent
+                else f"forward canceled {short_id(message_id)}"
+            )
             continue
         if selection.action in {ACTION_ARCHIVE_HOVERED, ACTION_UNARCHIVE_HOVERED}:
             if selection.index is None or not rows:
@@ -2584,9 +2705,13 @@ def screen_message_detail(conn: sqlite3.Connection, screen: ScreenEntry) -> Scre
         title_lines=["Message Detail"],
         content_lines=build_message_detail_with_tasks(conn, row),
         can_reply=row["receiver"] == "ceo",
+        can_forward_message=row["receiver"] == "ceo",
     )
     if result.action == "reply":
         compose_reply_for_message(conn, row)
+        return ScreenResult(ACTION_STAY)
+    if result.action == ACTION_MESSAGE_FORWARD:
+        compose_forward_for_message(conn, row)
         return ScreenResult(ACTION_STAY)
     if result.action == ACTION_SELECT and result.screen is not None:
         return ScreenResult(ACTION_OPEN, result.screen)

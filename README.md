@@ -178,6 +178,7 @@ Navigation controls:
 - Message table hotkeys: `/` text filter, `o` sender filter, `d` receiver filter, `s` scope cycle, `l` limit, `c` clear filters, `a` archive hovered row, `u` unarchive hovered row.
 - In task/message detail views, use arrow keys to move a readonly cursor over text.
 - Press `Enter` on a hovered ID (full UUID or unique suffix) to open the linked task/message.
+- Prefixed references in text are also supported, including `[msg:<uuid>]` / `msg:<uuid>` and `[task:<uuid>]` / `task:<uuid>`.
 - Message detail includes a `tasks_created_from_message` section; press `Enter` on a hovered `task_id` there to jump to task detail.
 - In CEO inbox message detail views, press `r` to open an inline reply draft panel below the open message.
 - In reply and compose draft panels, use arrow keys to move the cursor, `F2` to send, and `F1` to discard (`Ctrl-S`/`Ctrl-Q` are also supported when the terminal allows them).

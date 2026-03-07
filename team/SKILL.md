@@ -7,6 +7,12 @@ description: "Create and operate filesystem-based teams in exactly one mode per 
 
 Run exactly one mode per invocation: `create`, `recruit`, or `execute`.
 
+## Load References Progressively
+
+- Load [references/commands.md](references/commands.md) after selecting a mode and before running any CLI command.
+- Load [references/execute-playbook.md](references/execute-playbook.md) only for `execute` mode.
+- Load [references/state-and-templates.md](references/state-and-templates.md) when validating scaffolded files, runtime schema expectations, or directory structure.
+
 ## Mode Router (Required First Step)
 
 Choose mode before any filesystem write.
@@ -19,228 +25,53 @@ If intent is ambiguous, ask one clarifying question and stop.
 
 ## Global Rules
 
-### Naming and Paths
-
 - Use the invocation directory as default `--base`.
-- Team path format: `TEAM_<team-name>/`.
-- Member path format: `TEAM_<team-name>/members/<member-name>/`.
+- Enforce team path format: `TEAM_<team-name>/`.
+- Enforce member path format: `TEAM_<team-name>/members/<member-name>/`.
 - Reject names containing `/` or `\`.
-- Names should match `^[A-Za-z0-9._-]+$`.
-
-### Script Setup
-
-Set script paths first:
-
-```bash
-export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-export TEAM_FS_CLI="$CODEX_HOME/skills/team/scripts/team_fs.py"
-export TEAM_RUNTIME_CLI="$CODEX_HOME/skills/team/scripts/team_cli.py"
-export TEAM_CEO_CLI="$CODEX_HOME/skills/team/scripts/team_ceo_cli.py"
-```
-
-### Script-First Boundary
-
-Use scripts for deterministic writes and state transitions.
-
-- Team scaffolding and member scaffolding: `team_fs.py`.
-- Message/task state creation and updates: `team_cli.py`.
-- Human CEO terminal only: `team_ceo_cli.py`.
-
-Do not hand-edit SQLite state when an equivalent CLI command exists.
-
-### Runtime State (SQLite)
-
-- Persist runtime state in `TEAM_<team-name>/state/team_state.sqlite3`.
-- Core tables:
-  - `messages`: `message_id`, `sender`, `receiver`, `subject`, `body`, `created_at`, `status` (`unread|read|archived`), `read_at`, `archived_at`, `task_id` (optional).
-  - `tasks`: `task_id`, `owner`, `state` (`todo|in_progress|blocked|done|cancelled`), `body`, `priority`, `created_by`, `created_at`, `updated_at`, `blocked_reason`.
-- Never fabricate UUIDs; use CLI-generated IDs only.
-- Assume concurrent workers; runtime CLI handles WAL mode, busy timeout, and retrying write transactions.
-
-### Access Constraints
-
-- Member runs may list/read/archive only that member's inbox using `--member <active-member>`.
-- Never read another member's inbox in a member run.
-- Never read CEO inbox in normal member runs.
-- Sending to CEO is allowed (`--receiver ceo`) for escalations.
-- Never run `team_ceo_cli.py` from an agent invocation.
-
-### CEO Console (Human Only)
-
-Human terminal usage:
-
-```bash
-python3 "$TEAM_CEO_CLI" --base "<directory>" --team "<team-name-or-path>"
-./TEAM_<name>/ceo [extra flags]
-```
-
-The CEO console is the human interface for browsing tasks/messages (including member and CEO inboxes), unarchiving member messages, and sending replies/new CEO messages.
+- Require names to match `^[A-Za-z0-9._-]+$`.
+- Set `CODEX_HOME`, `TEAM_FS_CLI`, `TEAM_RUNTIME_CLI`, and `TEAM_CEO_CLI` using [references/commands.md](references/commands.md).
+- Use scripts for deterministic writes and state transitions.
+- Do not hand-edit SQLite state when an equivalent CLI command exists.
+- Allow member runs to list/read/archive only the active member inbox.
+- Never read another member inbox during member runs.
+- Never read CEO inbox during normal member runs.
+- Allow sending escalation messages with `--receiver ceo`.
+- Never run `team_ceo_cli.py` from an agent invocation; reserve it for human terminal usage.
 
 ## Mode: Create
 
 Use only when asked to create a team.
 
-Run:
-
-```bash
-python3 "$TEAM_FS_CLI" --base "<directory>" create --name "<team-name>" --mission "<mission text>"
-```
-
-Resulting structure:
-
-- `TEAM_<name>/`
-- `TEAM_<name>/members/`
-- `TEAM_<name>/state/`
-- `TEAM_<name>/mission.md`
-- `TEAM_<name>/ceo`
-- `TEAM_<name>/run`
-
-Rules:
-
+- Run team scaffolding command from [references/commands.md](references/commands.md).
 - Write `mission.md` from provided mission text.
-- If mission is missing, write a short placeholder and ask for mission details.
-- Initialize runtime DB schema:
-
-```bash
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<name-or-path>" init
-```
-
-- `create` writes executable `TEAM_<name>/ceo` wrapper bound to that team.
-- `create` writes executable `TEAM_<name>/run` wrapper bound to that team.
+- If mission text is missing, write a short placeholder and ask for mission details.
+- Initialize runtime DB schema using the runtime `init` command.
+- Verify scaffolded layout using [references/state-and-templates.md](references/state-and-templates.md).
 - Do not recruit members in this mode.
 
 ## Mode: Recruit
 
 Use only when asked to recruit one member.
 
-Precondition: team directory exists.
-
-Run:
-
-```bash
-python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>" --name "<member-name>" --role "<role text>"
-```
-
-Resulting member structure:
-
-- `members/<member-name>/`
-- `members/<member-name>/ROLE.md`
-- `members/<member-name>/context/`
-
-Rules:
-
+- Confirm team directory exists.
+- Run member scaffolding command from [references/commands.md](references/commands.md).
 - Write `ROLE.md` exactly from provided role text.
 - If role text is missing, write a short placeholder and ask for role details.
+- Verify scaffolded layout using [references/state-and-templates.md](references/state-and-templates.md).
 - Do not create or edit other members in this mode.
 
 ## Mode: Execute
 
 Use only when asked to execute one work round for one member.
 
-Preconditions:
-
-- `TEAM_<name>/mission.md` exists.
-- `members/<member>/ROLE.md` exists.
-- `members/<member>/context/` exists (create if missing).
-- Runtime CLI is available.
-
-Execute this sequence each run:
-
-0. Setup
-- Append current UTC timestamp to `members/<member>/.run` (create file if needed).
-- Load and follow `mission.md`.
-- Load and follow `ROLE.md` exactly as written.
-- Load only relevant markdown files from `context/`.
-
-1. Phase 1: Task Completion
-- List open tasks for active member.
-- Prioritize existing `in_progress` tasks before starting new tasks.
-- If none are `in_progress`, select highest-priority next task(s).
-- If tasks are tightly related, complete them together in one coherent effort.
-- Do not execute multiple unrelated tasks in one run.
-- Minimize leftover `in_progress` tasks.
-- If selected task is ambiguous/conflicting/not completable, escalate to CEO and set it `blocked` with reason.
-
-2. Phase 2: Message Processing
-- List unarchived inbox messages for active member; process unread first.
-- Read by `message_id` and action all inbox work for this run.
-- Complete quick actions immediately.
-- For non-quick actions, create concrete tasks and include source `message_id` for traceability.
-- Archive only when fully actioned now, or when created tasks fully cover follow-up.
-- If response is required, send it now.
-- If response must happen later, capture that obligation explicitly in task state.
-
-3. Phase 3: Prioritization
-- Review all member tasks (`todo`, `in_progress`, `blocked`).
-- Cancel stale tasks with reason.
-- Merge duplicate tasks and preserve traceability in remaining task text.
-- Split large tasks into smaller, concrete, single-purpose tasks.
-- Reassign priority across full task set each run.
-
-4. Close-out
-- Update/clean member context files.
-- Write short summary to `state/<member>-last-run.md` with timestamp, handled task IDs, and blockers/escalations.
-
-Hard constraints:
-
-- Run phases in order: Task Completion -> Message Processing -> Prioritization.
-- Never archive actionable work unless completed now or represented by task records.
-- Prefer many small single-purpose tasks over one large task.
-- Prioritize finishing `in_progress` before starting unrelated new work.
-- Keep actions mission-aligned.
-- If mission and role conflict, escalate to CEO and mark selected task `blocked`.
+- Enforce preconditions and run the full phase checklist from [references/execute-playbook.md](references/execute-playbook.md).
+- Run phases in strict order: `Task Completion -> Message Processing -> Prioritization -> Close-out`.
+- Use runtime CLI commands from [references/commands.md](references/commands.md).
 - If runtime CLI is unavailable, report blocker and never fabricate state.
-- Never read messages not addressed to active member.
-- Never modify task state for another member.
-
-## Runtime CLI Commands
-
-Initialization:
-
-```bash
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" init
-```
-
-Messages:
-
-```bash
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" message send --sender "<sender>" --receiver "<receiver-or-ceo>" --body "<message>" [--subject "<subject>"] [--task-id "<task-uuid>"]
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" message list --member "<member>" [--status inbox|unread|read|archived|all] [--sender "<sender>"] [--limit <n>]
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" message read --member "<member>" --message-id "<message-uuid>"
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" message archive --member "<member>" --message-id "<message-uuid>"
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" message list-archived --member "<member>" [--limit <n>]
-```
-
-Tasks:
-
-```bash
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" task create --owner "<member>" --body "<task body>" [--state todo|in_progress|blocked|done|cancelled] [--priority <int>] [--created-by "<actor>"]
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" task list [--owner "<member>"] [--state open|all|todo|in_progress|blocked|done|cancelled] [--limit <n>]
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" task show --task-id "<task-uuid>"
-python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" task update-state --task-id "<task-uuid>" --state "<todo|in_progress|blocked|done|cancelled>" [--reason "<note>"]
-```
-
-- Add top-level `--json` for machine-readable output.
-- Require `--reason` when setting task state to `blocked`.
 
 ## IDs and Traceability
 
 - Preserve `message_id` and `task_id` exactly as generated.
 - Include relevant IDs in replies, task updates, and escalations.
 - Include `task_id` in escalation messages when escalation is task-driven.
-
-## Minimal File Templates
-
-`mission.md`:
-
-```markdown
-# Mission
-<mission text>
-```
-
-`ROLE.md`:
-
-```markdown
-# Role
-<member role and operating constraints>
-```
