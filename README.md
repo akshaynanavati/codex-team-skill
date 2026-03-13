@@ -130,10 +130,16 @@ Useful options:
 ```bash
 ./TEAM_demo/run --dry-run
 ./TEAM_demo/run --rounds 3
+./TEAM_demo/run --rounds -1
 ./TEAM_demo/run --member analyst --sequential
 ./TEAM_demo/run --allow-member analyst --deny-member pm --rounds 1
 ./TEAM_demo/run --ignore-ceo-messages
 ```
+
+Scheduler stop control:
+
+- Create `TEAM_<name>/.stop` to make `TEAM_<name>/run` exit cleanly at the start of the next round.
+- `--rounds -1` keeps the scheduler running until that `.stop` file appears.
 
 ## CEO CLI (Human-Only)
 

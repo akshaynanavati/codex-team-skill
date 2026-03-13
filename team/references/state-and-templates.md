@@ -11,6 +11,10 @@ Use this file when validating scaffolded outputs, runtime state expectations, or
 - `TEAM_<name>/ceo`
 - `TEAM_<name>/run`
 
+Optional scheduler control file:
+
+- `TEAM_<name>/.stop` causes `TEAM_<name>/run` to stop cleanly at the start of the next round.
+
 ## Member layout after `recruit`
 
 - `TEAM_<name>/members/<member-name>/`
