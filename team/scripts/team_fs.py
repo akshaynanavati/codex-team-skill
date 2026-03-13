@@ -34,6 +34,14 @@ def mission_template(mission: str) -> str:
     return f"# Mission\n{mission_text}\n"
 
 
+def guidelines_template(guidelines: str) -> str:
+    guidelines_text = (
+        guidelines.strip()
+        or "- TODO: define team-wide rules all members must follow."
+    )
+    return f"# Team Guidelines\n{guidelines_text}\n"
+
+
 def role_template(role: str) -> str:
     role_text = role.strip() or "TODO: define this member's role and constraints."
     return f"# Role\n{role_text}\n"
@@ -234,6 +242,13 @@ def cmd_create(args: argparse.Namespace) -> int:
         mission_path.write_text(mission_template(args.mission), encoding="utf-8")
         print(f"[OK] wrote mission: {mission_path}")
 
+    guidelines_path = team_root / "guidelines.md"
+    if guidelines_path.exists() and not args.overwrite_guidelines:
+        print(f"[SKIP] guidelines exist: {guidelines_path}")
+    else:
+        guidelines_path.write_text(guidelines_template(args.guidelines), encoding="utf-8")
+        print(f"[OK] wrote guidelines: {guidelines_path}")
+
     ceo_wrapper_path = team_root / "ceo"
     if ceo_wrapper_path.exists() and ceo_wrapper_path.is_dir():
         return fail(f"ceo wrapper target exists as a directory: {ceo_wrapper_path}")
@@ -316,6 +331,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite-mission",
         action="store_true",
         help="Overwrite mission.md if it already exists.",
+    )
+    create_parser.add_argument(
+        "--guidelines",
+        default="",
+        help="Team-wide rules for guidelines.md. Empty writes a TODO placeholder.",
+    )
+    create_parser.add_argument(
+        "--overwrite-guidelines",
+        action="store_true",
+        help="Overwrite guidelines.md if it already exists.",
     )
     create_parser.add_argument(
         "--overwrite-ceo-wrapper",
