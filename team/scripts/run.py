@@ -15,11 +15,14 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Callable, Mapping
 
 VALID_MEMBER = re.compile(r"^[A-Za-z0-9._-]+$")
 DB_FILENAME = "team_state.sqlite3"
+STOP_FILENAME = ".stop"
+IDLE_RECHECK_SECONDS = 1.0
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
 CEO_UNREAD_PREVIEW_LIMIT = 10
 MESSAGE_BODY_PREVIEW_WIDTH = 96
@@ -169,8 +172,7 @@ def print_unread_message_preview(
 def wait_for_ceo_inbox_clear(
     conn: sqlite3.Connection,
     team_root: Path,
-    round_number: int,
-    total_rounds: int,
+    round_label: str,
     *,
     ignore_ceo_messages: bool,
 ) -> bool:
@@ -181,14 +183,14 @@ def wait_for_ceo_inbox_clear(
 
         if ignore_ceo_messages:
             print(
-                f"[WARN] round={round_number}/{total_rounds} continuing: "
+                f"[WARN] round={round_label} continuing: "
                 f"CEO has {unread_ceo} unread message(s) "
                 "(enabled by --ignore-ceo-messages)."
             )
             return True
 
         print(
-            f"[PAUSE] round={round_number}/{total_rounds} blocked: "
+            f"[PAUSE] round={round_label} blocked: "
             f"CEO has {unread_ceo} unread message(s)."
         )
         try:
@@ -360,7 +362,8 @@ def build_execute_prompt(member: str, team_root: Path) -> str:
     return (
         "Use $team in execute mode only. "
         f"Execute one work round for member '{member}' in team '{team_root}'. "
-        "Follow mission/role/context loading, message-first processing, single-task handling, "
+        "Follow mission/role/context loading, team guidelines when guidelines.md exists, "
+        "message-first processing, single-task handling, "
         "and runtime CLI state updates exactly as defined by the skill."
     )
 
@@ -431,7 +434,10 @@ def parse_args() -> argparse.Namespace:
         "--rounds",
         type=int,
         default=1,
-        help="Number of scheduler rounds to run (default: 1).",
+        help=(
+            "Number of scheduler rounds to run (default: 1). "
+            "Use -1 to keep running until TEAM_<name>/.stop exists."
+        ),
     )
     parser.add_argument(
         "--codex-bin",
@@ -498,10 +504,20 @@ def append_run_timestamp(team_root: Path, member_dir_name: str) -> None:
         handle.write(f"{timestamp}\n")
 
 
+def format_round_label(round_number: int, requested_rounds: int) -> str:
+    if requested_rounds == -1:
+        return f"{round_number}/infinite"
+    return f"{round_number}/{requested_rounds}"
+
+
+def stop_file_path(team_root: Path) -> Path:
+    return team_root / STOP_FILENAME
+
+
 def main() -> int:
     args = parse_args()
-    if args.rounds <= 0:
-        return fail("--rounds must be greater than 0.")
+    if args.rounds == 0 or args.rounds < -1:
+        return fail("--rounds must be greater than 0, or exactly -1 for unbounded runs.")
 
     default_team_root = Path.cwd()
     team_root = resolve_team_root(args.team, default_team_root)
@@ -552,15 +568,27 @@ def main() -> int:
 
     stop_after_round = False
     try:
-        for round_number in range(1, args.rounds + 1):
+        round_number = 0
+        while args.rounds == -1 or round_number < args.rounds:
+            round_number += 1
+            round_label = format_round_label(round_number, args.rounds)
+
             # Reset any active transaction so each round sees fresh runtime state.
             conn.commit()
-            print(f"[ROUND] {round_number}/{args.rounds}")
+
+            stop_path = stop_file_path(team_root)
+            if stop_path.exists():
+                print(
+                    f"[STOP] round={round_label} stop file detected at {stop_path}; "
+                    "exiting gracefully."
+                )
+                break
+
+            print(f"[ROUND] {round_label}")
             if not wait_for_ceo_inbox_clear(
                 conn,
                 team_root,
-                round_number,
-                args.rounds,
+                round_label,
                 ignore_ceo_messages=args.ignore_ceo_messages,
             ):
                 try:
@@ -575,7 +603,7 @@ def main() -> int:
                 send_os_notification(
                     "Team run stopped",
                     (
-                        f"{team_root.name}: round {round_number}/{args.rounds} stopped due to "
+                        f"{team_root.name}: round {round_label} stopped due to "
                         f"{unread_fragment}."
                     ),
                 )
@@ -769,11 +797,19 @@ def main() -> int:
                 )
 
             if runnable_count == 0:
-                print(
-                    f"[ROUND] {round_number}/{args.rounds} "
-                    "no members eligible to run; ending remaining rounds early."
-                )
-                stop_after_round = True
+                if args.rounds == -1:
+                    print(
+                        f"[ROUND] {round_label} "
+                        "no members eligible to run; rechecking in "
+                        f"{IDLE_RECHECK_SECONDS:.1f}s because --rounds=-1."
+                    )
+                    time.sleep(IDLE_RECHECK_SECONDS)
+                else:
+                    print(
+                        f"[ROUND] {round_label} "
+                        "no members eligible to run; ending remaining rounds early."
+                    )
+                    stop_after_round = True
 
             if not args.sequential:
                 # Barrier: wait for all launched member runs in this round before
