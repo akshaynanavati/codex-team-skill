@@ -8,6 +8,7 @@ Use this file when validating scaffolded outputs, runtime state expectations, or
 - `TEAM_<name>/members/`
 - `TEAM_<name>/state/`
 - `TEAM_<name>/mission.md`
+- `TEAM_<name>/guidelines.md`
 - `TEAM_<name>/ceo`
 - `TEAM_<name>/run`
 
@@ -43,6 +44,13 @@ Status and state values:
 ```markdown
 # Mission
 <mission text>
+```
+
+`guidelines.md`:
+
+```markdown
+# Team Guidelines
+<team-wide rules every member must follow>
 ```
 
 `ROLE.md`:

@@ -86,6 +86,7 @@ codex exec 'Use $team in create mode. Create team demo with mission: Ship reliab
 This creates:
 
 - `TEAM_demo/mission.md`
+- `TEAM_demo/guidelines.md`
 - `TEAM_demo/members/`
 - `TEAM_demo/state/`
 - `TEAM_demo/ceo`
@@ -124,6 +125,7 @@ Run all runnable members with the team scheduler:
 ```
 
 The runner evaluates each member and invokes Codex for runnable members.
+Each member run follows `mission.md`, `ROLE.md`, member `context/`, and team `guidelines.md` when present.
 
 Useful options:
 
@@ -225,7 +227,7 @@ codex exec 'Use $team in create mode. Create team launch_ops with mission: Plan 
 
 What this does:
 
-- Creates `TEAM_launch_ops/` with mission, members/state directories, `run`, and `ceo` wrappers.
+- Creates `TEAM_launch_ops/` with mission/guidelines files, members/state directories, `run`, and `ceo` wrappers.
 - Initializes the runtime SQLite database used by tasks/messages.
 
 ### 2) Recruit Four Members (via Codex)
@@ -328,7 +330,7 @@ python3 scripts/team_cli.py --base <dir> --team <team> init
 Create team and recruit members:
 
 ```bash
-python3 scripts/team_fs.py --base <dir> create --name <team-name> --mission '<mission>'
+python3 scripts/team_fs.py --base <dir> create --name <team-name> --mission '<mission>' [--guidelines '<team-rules>']
 python3 scripts/team_fs.py --base <dir> recruit --team <team-name-or-path> --name <member-name> --role '<role>'
 ```
 

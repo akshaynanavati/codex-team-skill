@@ -5,6 +5,7 @@ Use this file only for `execute` mode.
 ## Preconditions
 
 - Ensure `TEAM_<name>/mission.md` exists.
+- If `TEAM_<name>/guidelines.md` exists, plan to enforce it.
 - Ensure `members/<member>/ROLE.md` exists.
 - Ensure `members/<member>/context/` exists; create it if missing.
 - Ensure runtime CLI is available before mutating state.
@@ -13,6 +14,7 @@ Use this file only for `execute` mode.
 
 - Append current UTC timestamp to `members/<member>/.run` (create file if needed).
 - Load and follow `mission.md`.
+- Load and follow `guidelines.md` when it exists.
 - Load and follow `ROLE.md` exactly as written.
 - Load only relevant markdown files from `context/`.
 
@@ -56,6 +58,7 @@ Use this file only for `execute` mode.
 - Prefer many small single-purpose tasks over one large task.
 - Finish `in_progress` tasks before starting unrelated new work.
 - Keep actions mission-aligned.
+- Keep actions aligned with team guidelines when `guidelines.md` exists.
 - If mission and role conflict, escalate to CEO and mark selected task `blocked`.
 - If runtime CLI is unavailable, report blocker and never fabricate state.
 - Never read messages not addressed to active member.

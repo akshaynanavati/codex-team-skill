@@ -27,7 +27,7 @@ export TEAM_CEO_CLI="$CODEX_HOME/skills/team/scripts/team_ceo_cli.py"
 Create team workspace:
 
 ```bash
-python3 "$TEAM_FS_CLI" --base "<directory>" create --name "<team-name>" --mission "<mission text>"
+python3 "$TEAM_FS_CLI" --base "<directory>" create --name "<team-name>" --mission "<mission text>" [--guidelines "<team rules>"]
 ```
 
 Then initialize runtime DB schema:

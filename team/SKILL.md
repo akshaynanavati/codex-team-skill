@@ -1,6 +1,6 @@
 ---
 name: team
-description: "Create and operate filesystem-based teams in exactly one mode per run: (1) create a team workspace, (2) recruit a member, or (3) execute one work round for a specific member. Use when asked to initialize `TEAM_<name>/` with `members/`, `state/`, and `mission.md`, add `members/<name>/ROLE.md` plus `context/`, or run a mission-aligned member cycle with strict message isolation and SQLite-backed message/task state through the bundled team CLI."
+description: "Create and operate filesystem-based teams in exactly one mode per run: (1) create a team workspace, (2) recruit a member, or (3) execute one work round for a specific member. Use when asked to initialize `TEAM_<name>/` with `members/`, `state/`, `mission.md`, and `guidelines.md`, add `members/<name>/ROLE.md` plus `context/`, or run a mission-aligned member cycle with strict message isolation and SQLite-backed message/task state through the bundled team CLI."
 ---
 
 # Team
@@ -46,6 +46,8 @@ Use only when asked to create a team.
 - Run team scaffolding command from [references/commands.md](references/commands.md).
 - Write `mission.md` from provided mission text.
 - If mission text is missing, write a short placeholder and ask for mission details.
+- Write `guidelines.md` with provided team-wide rules.
+- If guidelines are missing, write a short placeholder and ask for guidelines details.
 - Initialize runtime DB schema using the runtime `init` command.
 - Verify scaffolded layout using [references/state-and-templates.md](references/state-and-templates.md).
 - Do not recruit members in this mode.
@@ -67,6 +69,7 @@ Use only when asked to execute one work round for one member.
 
 - Enforce preconditions and run the full phase checklist from [references/execute-playbook.md](references/execute-playbook.md).
 - Run phases in strict order: `Task Completion -> Message Processing -> Prioritization -> Close-out`.
+- If `guidelines.md` exists, load and follow it.
 - Use runtime CLI commands from [references/commands.md](references/commands.md).
 - If runtime CLI is unavailable, report blocker and never fabricate state.
 
