@@ -24,6 +24,7 @@ DB_FILENAME = "team_state.sqlite3"
 STOP_FILENAME = ".stop"
 IDLE_RECHECK_SECONDS = 1.0
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
+RUN_MODES = ("execute", "train", "optimize")
 CEO_UNREAD_PREVIEW_LIMIT = 10
 MESSAGE_BODY_PREVIEW_WIDTH = 96
 CustomDecision = bool | None
@@ -368,6 +369,38 @@ def build_execute_prompt(member: str, team_root: Path) -> str:
     )
 
 
+def build_train_prompt(member: str, team_root: Path) -> str:
+    return (
+        "Use $team in train mode only. "
+        f"Train member '{member}' in team '{team_root}'. "
+        "Read the current ROLE.md first, run the training inspection command, "
+        "review that member's own tasks and teammate messages, "
+        "and rewrite ROLE.md to reflect durable real responsibilities without "
+        "mutating task or message state."
+    )
+
+
+def build_optimize_prompt(member: str, team_root: Path) -> str:
+    return (
+        "Use $team in optimize mode only. "
+        f"Optimize member '{member}' in team '{team_root}'. "
+        "Read ROLE.md first, run the optimize inspection command, "
+        "inspect only that member's tasks and messages when choosing durable context, "
+        "and rewrite only that member's context/ into concise high-fidelity files "
+        "without executing tasks or mutating task or message state."
+    )
+
+
+def build_mode_prompt(run_mode: str, member: str, team_root: Path) -> str:
+    if run_mode == "execute":
+        return build_execute_prompt(member, team_root)
+    if run_mode == "train":
+        return build_train_prompt(member, team_root)
+    if run_mode == "optimize":
+        return build_optimize_prompt(member, team_root)
+    raise ValueError(f"unsupported run mode: {run_mode}")
+
+
 def build_codex_command(
     codex_bin: str,
     project_root: Path,
@@ -393,7 +426,10 @@ def build_codex_command(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run each team member whose run criteria currently evaluate to true."
+        description=(
+            "Run selected team members in execute mode, or batch-train / batch-optimize "
+            "them in a single pass."
+        )
     )
     parser.add_argument(
         "--team",
@@ -430,13 +466,25 @@ def parse_args() -> argparse.Namespace:
             "Member matching is case-insensitive."
         ),
     )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--train",
+        action="store_true",
+        help="Run one training pass for each selected member instead of execute mode.",
+    )
+    mode_group.add_argument(
+        "--optimize",
+        action="store_true",
+        help="Run one optimize pass for each selected member instead of execute mode.",
+    )
     parser.add_argument(
         "--rounds",
         type=int,
         default=1,
         help=(
             "Number of scheduler rounds to run (default: 1). "
-            "Use -1 to keep running until TEAM_<name>/.stop exists."
+            "Use -1 to keep running until TEAM_<name>/.stop exists. "
+            "--train/--optimize always run exactly one round."
         ),
     )
     parser.add_argument(
@@ -474,14 +522,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sequential",
         action="store_true",
-        help="Run runnable members one at a time instead of concurrently.",
+        help="Run selected members one at a time instead of concurrently.",
     )
     parser.add_argument(
         "--ignore-ceo-messages",
         action="store_true",
         help=(
-            "Continue rounds even when CEO has unread inbox messages "
-            "(default: gate on unread CEO messages)."
+            "Continue execute rounds even when CEO has unread inbox messages "
+            "(default: gate on unread CEO messages in execute mode only)."
         ),
     )
     parser.add_argument(
@@ -490,6 +538,14 @@ def parse_args() -> argparse.Namespace:
         help="Emit final summary as JSON.",
     )
     return parser.parse_args()
+
+
+def resolve_run_mode(args: argparse.Namespace) -> str:
+    if args.train:
+        return "train"
+    if args.optimize:
+        return "optimize"
+    return "execute"
 
 
 def print_command(command: list[str]) -> str:
@@ -516,8 +572,12 @@ def stop_file_path(team_root: Path) -> Path:
 
 def main() -> int:
     args = parse_args()
-    if args.rounds == 0 or args.rounds < -1:
+    run_mode = resolve_run_mode(args)
+    if run_mode not in RUN_MODES:
+        return fail(f"unsupported run mode: {run_mode}")
+    if run_mode == "execute" and (args.rounds == 0 or args.rounds < -1):
         return fail("--rounds must be greater than 0, or exactly -1 for unbounded runs.")
+    effective_rounds = args.rounds if run_mode == "execute" else 1
 
     default_team_root = Path.cwd()
     team_root = resolve_team_root(args.team, default_team_root)
@@ -568,10 +628,15 @@ def main() -> int:
 
     stop_after_round = False
     try:
+        if run_mode != "execute" and args.rounds != 1:
+            print(
+                f"[INFO] mode={run_mode} ignoring --rounds={args.rounds}; "
+                "running exactly one round."
+            )
         round_number = 0
-        while args.rounds == -1 or round_number < args.rounds:
+        while effective_rounds == -1 or round_number < effective_rounds:
             round_number += 1
-            round_label = format_round_label(round_number, args.rounds)
+            round_label = format_round_label(round_number, effective_rounds)
 
             # Reset any active transaction so each round sees fresh runtime state.
             conn.commit()
@@ -584,44 +649,45 @@ def main() -> int:
                 )
                 break
 
-            print(f"[ROUND] {round_label}")
-            if not wait_for_ceo_inbox_clear(
-                conn,
-                team_root,
-                round_label,
-                ignore_ceo_messages=args.ignore_ceo_messages,
-            ):
-                try:
-                    unread_ceo = count_unread_messages(conn, "ceo")
-                except sqlite3.Error:
-                    unread_ceo = -1
-                unread_fragment = (
-                    f"{unread_ceo} unread CEO message(s)"
-                    if unread_ceo >= 0
-                    else "unread CEO messages"
-                )
-                send_os_notification(
-                    "Team run stopped",
-                    (
-                        f"{team_root.name}: round {round_label} stopped due to "
-                        f"{unread_fragment}."
-                    ),
-                )
-                print(
-                    "[HINT] Re-run with --ignore-ceo-messages to continue rounds "
-                    "even when CEO has unread messages."
-                )
-                summary["failed"].append(
-                    {
-                        "round": round_number,
-                        "member": "ceo-gate",
-                        "reason": "unread CEO messages require human handling",
-                        "exit_code": None,
-                        "error": "scheduler aborted by CEO inbox gate",
-                    }
-                )
-                stop_after_round = True
-                break
+            print(f"[ROUND] {round_label} mode={run_mode}")
+            if run_mode == "execute":
+                if not wait_for_ceo_inbox_clear(
+                    conn,
+                    team_root,
+                    round_label,
+                    ignore_ceo_messages=args.ignore_ceo_messages,
+                ):
+                    try:
+                        unread_ceo = count_unread_messages(conn, "ceo")
+                    except sqlite3.Error:
+                        unread_ceo = -1
+                    unread_fragment = (
+                        f"{unread_ceo} unread CEO message(s)"
+                        if unread_ceo >= 0
+                        else "unread CEO messages"
+                    )
+                    send_os_notification(
+                        "Team run stopped",
+                        (
+                            f"{team_root.name}: round {round_label} stopped due to "
+                            f"{unread_fragment}."
+                        ),
+                    )
+                    print(
+                        "[HINT] Re-run with --ignore-ceo-messages to continue rounds "
+                        "even when CEO has unread messages."
+                    )
+                    summary["failed"].append(
+                        {
+                            "round": round_number,
+                            "member": "ceo-gate",
+                            "reason": "unread CEO messages require human handling",
+                            "exit_code": None,
+                            "error": "scheduler aborted by CEO inbox gate",
+                        }
+                    )
+                    stop_after_round = True
+                    break
 
             launched: list[dict[str, object]] = []
             round_has_failure = False
@@ -643,7 +709,9 @@ def main() -> int:
                     print(f"[SKIP] round={round_number} {member_key}: {reason}")
                     continue
 
-                if member_key in allow_members:
+                if run_mode != "execute":
+                    should_run, reason = True, f"selected for {run_mode} mode"
+                elif member_key in allow_members:
                     should_run, reason = True, "forced by --allow-member"
                 else:
                     should_run, reason = default_should_run(conn, member_key, team_root)
@@ -661,7 +729,7 @@ def main() -> int:
                     continue
 
                 runnable_count += 1
-                prompt = build_execute_prompt(member_dir_name, team_root)
+                prompt = build_mode_prompt(run_mode, member_dir_name, team_root)
                 command = build_codex_command(
                     args.codex_bin,
                     project_root,
@@ -687,29 +755,30 @@ def main() -> int:
                     print(f"          {command_display}")
                     continue
 
-                try:
-                    append_run_timestamp(team_root, member_dir_name)
-                except OSError as exc:
-                    summary["failed"].append(
-                        {
-                            "round": round_number,
-                            "member": member_key,
-                            "member_dir": member_dir_name,
-                            "reason": reason,
-                            "exit_code": None,
-                            "error": f"unable to append run timestamp: {exc}",
-                        }
-                    )
-                    print(
-                        f"[FAIL] round={round_number} {member_key}: "
-                        f"unable to append .run timestamp ({exc})",
-                        file=sys.stderr,
-                    )
-                    round_has_failure = True
-                    if not args.continue_on_error:
-                        stop_after_round = True
-                        break
-                    continue
+                if run_mode == "execute":
+                    try:
+                        append_run_timestamp(team_root, member_dir_name)
+                    except OSError as exc:
+                        summary["failed"].append(
+                            {
+                                "round": round_number,
+                                "member": member_key,
+                                "member_dir": member_dir_name,
+                                "reason": reason,
+                                "exit_code": None,
+                                "error": f"unable to append run timestamp: {exc}",
+                            }
+                        )
+                        print(
+                            f"[FAIL] round={round_number} {member_key}: "
+                            f"unable to append .run timestamp ({exc})",
+                            file=sys.stderr,
+                        )
+                        round_has_failure = True
+                        if not args.continue_on_error:
+                            stop_after_round = True
+                            break
+                        continue
 
                 print(f"[RUN ] round={round_number} {member_key}: {reason}")
                 print(f"          {command_display}")
@@ -797,7 +866,7 @@ def main() -> int:
                 )
 
             if runnable_count == 0:
-                if args.rounds == -1:
+                if effective_rounds == -1:
                     print(
                         f"[ROUND] {round_label} "
                         "no members eligible to run; rechecking in "

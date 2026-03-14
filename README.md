@@ -19,7 +19,7 @@ The runtime is local-first: all state is stored in your team folder, and message
 - Deterministic optimize snapshots for one member's role/context/runtime state
 - SQLite state store for messages and tasks
 - Strict inbox isolation by member identity
-- Team-local scheduler wrapper (`TEAM_<name>/run`) that triggers member runs from inbox/tasks
+- Team-local scheduler wrapper (`TEAM_<name>/run`) that executes runnable members and can batch-train or batch-optimize selected members
 - Human-only CEO console wrapper (`TEAM_<name>/ceo`) for oversight
 
 ## Repository Layout
@@ -142,13 +142,13 @@ Run one member round:
 codex exec 'Use $team in execute mode. Execute one work round for member analyst in team demo.'
 ```
 
-Run all runnable members with the team scheduler:
+Run members with the team scheduler:
 
 ```bash
 ./TEAM_demo/run
 ```
 
-The runner evaluates each member and invokes Codex for runnable members.
+By default, the runner evaluates each member and invokes Codex only for runnable members in execute mode.
 Each member run follows `mission.md`, `ROLE.md`, member `context/`, and team `guidelines.md` when present.
 
 Useful options:
@@ -157,10 +157,14 @@ Useful options:
 ./TEAM_demo/run --dry-run
 ./TEAM_demo/run --rounds 3
 ./TEAM_demo/run --rounds -1
+./TEAM_demo/run --train
+./TEAM_demo/run --optimize --sequential
 ./TEAM_demo/run --member analyst --sequential
 ./TEAM_demo/run --allow-member analyst --deny-member pm --rounds 1
 ./TEAM_demo/run --ignore-ceo-messages
 ```
+
+`--train` and `--optimize` run exactly one round, ignore `--rounds`, skip the execute-only CEO inbox gate, and run all selected members concurrently unless `--sequential` is set.
 
 Scheduler stop control:
 
@@ -306,6 +310,18 @@ Run two rounds sequentially (easier to observe in order):
 ./TEAM_launch_ops/run --rounds 2 --sequential
 ```
 
+Batch-train every member once:
+
+```bash
+./TEAM_launch_ops/run --train
+```
+
+Batch-optimize every member once in sequence:
+
+```bash
+./TEAM_launch_ops/run --optimize --sequential
+```
+
 ### 6) Handle Escalations During Runs
 
 If `./TEAM_launch_ops/run` pauses because CEO has unread messages:
@@ -333,6 +349,13 @@ Run with explicit model/effort:
 
 ```bash
 ./TEAM_launch_ops/run --model gpt-5.3-codex --reasoning-effort medium --rounds 1
+```
+
+Train or optimize only a subset of members:
+
+```bash
+./TEAM_launch_ops/run --train --member pm --member engineer
+./TEAM_launch_ops/run --optimize --member analyst --sequential
 ```
 
 Use CEO CLI continuously for oversight:
