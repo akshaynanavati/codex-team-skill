@@ -37,6 +37,7 @@ TASK_DISPLAY_STATE_ORDER = {
     "cancelled": 2,
 }
 DEFAULT_TABLE_LIMIT = 200
+TIMESTAMP_FIELD_NAMES = frozenset({"created_at", "updated_at", "read_at", "archived_at"})
 
 KEY_UP = "up"
 KEY_DOWN = "down"
@@ -1024,13 +1025,27 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
             )
 
 
-def format_timestamp_human(timestamp: str) -> str:
+def format_timestamp_human(timestamp: object) -> str:
+    value = render_text(timestamp).strip()
+    if not value:
+        return ""
     try:
-        normalized = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+        normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
         parsed = datetime.fromisoformat(normalized)
     except ValueError:
-        return timestamp
-    return parsed.strftime("%Y-%d-%m %H:%M:%S")
+        return value
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone()
+        zone_label = parsed.tzname() or parsed.strftime("%z")
+        suffix = f" {zone_label}" if zone_label else ""
+        return parsed.strftime("%Y-%m-%d %H:%M:%S") + suffix
+    return parsed.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def render_detail_value(key: str, value: object) -> str:
+    if key in TIMESTAMP_FIELD_NAMES:
+        return format_timestamp_human(value)
+    return render_text(value)
 
 
 def sort_task_rows_for_display(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
@@ -1074,7 +1089,7 @@ def show_task_detail(conn: sqlite3.Connection, task_id: str) -> None:
         "updated_at",
         "blocked_reason",
     ):
-        print(f"{key}: {render_text(row[key])}")
+        print(f"{key}: {render_detail_value(key, row[key])}")
     print("body:")
     print(render_text(row["body"]))
 
@@ -1144,7 +1159,7 @@ def view_tasks_by_member(conn: sqlite3.Connection, team_root: Path) -> None:
             short_id(row["task_id"]),
             row["state"][:12],
             str(row["priority"]),
-            row["updated_at"][:20],
+            format_timestamp_human(row["updated_at"]),
             runtime.body_preview(render_text(row["body"]), 42),
         ]
         for index, row in enumerate(rows, start=1)
@@ -1268,7 +1283,7 @@ def print_message_detail(row: sqlite3.Row) -> None:
         "task_id",
         "subject",
     ):
-        print(f"{key}: {render_text(row[key])}")
+        print(f"{key}: {render_detail_value(key, row[key])}")
     print("body:")
     print(render_text(row["body"]))
 
@@ -2045,8 +2060,8 @@ def build_task_detail_lines(row: sqlite3.Row) -> list[str]:
         f"state: {render_text(row['state'])}",
         f"priority: {render_text(row['priority'])}",
         f"created_by: {render_text(row['created_by'])}",
-        f"created_at: {render_text(row['created_at'])}",
-        f"updated_at: {render_text(row['updated_at'])}",
+        f"created_at: {format_timestamp_human(row['created_at'])}",
+        f"updated_at: {format_timestamp_human(row['updated_at'])}",
         f"blocked_reason: {render_text(row['blocked_reason'])}",
         "body:",
     ]
@@ -2061,9 +2076,9 @@ def build_message_detail_lines(row: sqlite3.Row) -> list[str]:
         f"sender: {render_text(row['sender'])}",
         f"receiver: {render_text(row['receiver'])}",
         f"status: {render_text(row['status'])}",
-        f"created_at: {render_text(row['created_at'])}",
-        f"read_at: {render_text(row['read_at'])}",
-        f"archived_at: {render_text(row['archived_at'])}",
+        f"created_at: {format_timestamp_human(row['created_at'])}",
+        f"read_at: {format_timestamp_human(row['read_at'])}",
+        f"archived_at: {format_timestamp_human(row['archived_at'])}",
         f"task_id: {render_text(row['task_id'])}",
         f"subject: {render_text(row['subject'])}",
         "body:",
