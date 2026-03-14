@@ -195,14 +195,13 @@ Important behavior:
 
 When the CEO console opens, it provides:
 
-1. View tasks table
-2. View messages table
-3. View CEO inbox
-4. Create scheduler `.stop` file / remove it when already present
-5. Send a message to a member
-6. Quit
+1. Send a message to a member
+2. View CEO inbox
+3. Add scheduler `.stop` file, or remove it when already present
+4. View messages table
+5. View tasks table
 
-Option `4` toggles `TEAM_<name>/.stop`, which is the same stop file checked by `TEAM_<name>/run`.
+Option `3` toggles `TEAM_<name>/.stop`, which is the same stop file checked by `TEAM_<name>/run`.
 
 Navigation controls:
 
@@ -283,9 +282,9 @@ Open the CEO CLI:
 
 In the menu:
 
-1. Choose `5) Send a message to a member` and send kickoff messages to `pm`, `analyst`, `engineer`, and `qa`.
-2. Use `3) View CEO inbox` to monitor escalations coming back to CEO.
-3. Use `4) Respond to a message` to answer escalations and unblock work.
+1. Choose `1) Send a message to a member` and send kickoff messages to `pm`, `analyst`, `engineer`, and `qa`.
+2. Use `2) View CEO inbox` to monitor escalations coming back to CEO.
+3. Open an inbox message and press `r` to reply inline when needed.
 
 ### 4) Preview Which Members Will Run
 
@@ -329,8 +328,8 @@ Batch-optimize every member once in sequence:
 If `./TEAM_launch_ops/run` pauses because CEO has unread messages:
 
 1. Open the CEO CLI in another terminal: `./TEAM_launch_ops/ceo`
-2. Choose `3) View CEO inbox` and open unread messages.
-3. Choose `4) Respond to a message` when a reply is needed.
+2. Choose `2) View CEO inbox` and open unread messages.
+3. Press `r` from the message detail view when a reply is needed.
 4. Return to the paused runner and continue.
 
 If you intentionally want rounds to continue without waiting on CEO inbox, run with:

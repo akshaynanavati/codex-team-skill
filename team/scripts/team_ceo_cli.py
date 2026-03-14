@@ -935,7 +935,7 @@ def format_stop_file_menu_option(team_root: Path) -> str:
     stop_path = runtime.stop_file_path(team_root)
     if stop_path.exists():
         return "Remove scheduler .stop file"
-    return "Create scheduler .stop file"
+    return "Add scheduler .stop file"
 
 
 def toggle_stop_file(team_root: Path) -> None:
@@ -2295,12 +2295,11 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
         f"db:   {db_path}",
     ]
     options = [
-        "View tasks table",
-        "View messages table",
+        "Send a message to a member",
         "View CEO inbox",
         format_stop_file_menu_option(team_root),
-        "Send a message to a member",
-        "Quit",
+        "View messages table",
+        "View tasks table",
     ]
     selected = interactive_menu_selection(
         title_lines=title_lines,
@@ -2319,27 +2318,27 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
 
     choice = selected.index
     if choice == 0:
-        return ScreenResult(
-            ACTION_OPEN,
-            ScreenEntry(SCREEN_TASK_LIST, ("", "all", "", DEFAULT_TABLE_LIMIT)),
-        )
+        send_message_to_member(conn, team_root)
+        return ScreenResult(ACTION_STAY)
     if choice == 1:
-        return ScreenResult(
-            ACTION_OPEN,
-            ScreenEntry(SCREEN_MESSAGE_LIST, ("", "", "all", "", DEFAULT_TABLE_LIMIT)),
-        )
-    if choice == 2:
         return ScreenResult(
             ACTION_OPEN,
             ScreenEntry(SCREEN_MESSAGE_LIST, ("", "ceo", "inbox", "", DEFAULT_TABLE_LIMIT)),
         )
-    if choice == 3:
+    if choice == 2:
         toggle_stop_file(team_root)
         return ScreenResult(ACTION_STAY)
+    if choice == 3:
+        return ScreenResult(
+            ACTION_OPEN,
+            ScreenEntry(SCREEN_MESSAGE_LIST, ("", "", "all", "", DEFAULT_TABLE_LIMIT)),
+        )
     if choice == 4:
-        send_message_to_member(conn, team_root)
-        return ScreenResult(ACTION_STAY)
-    return ScreenResult(ACTION_QUIT)
+        return ScreenResult(
+            ACTION_OPEN,
+            ScreenEntry(SCREEN_TASK_LIST, ("", "all", "", DEFAULT_TABLE_LIMIT)),
+        )
+    return ScreenResult(ACTION_STAY)
 
 
 def screen_task_list(conn: sqlite3.Connection, screen: ScreenEntry) -> ScreenResult:
