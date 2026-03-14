@@ -1,6 +1,10 @@
-# Execute Mode Playbook
+# Execute Mode
 
 Use this file only for `execute` mode.
+
+## Load Only These References
+
+- Load [execute-commands.md](execute-commands.md) before mutating runtime state.
 
 ## Preconditions
 
@@ -12,7 +16,7 @@ Use this file only for `execute` mode.
 
 ## Step 0: Setup
 
-- Append current UTC timestamp to `members/<member>/.run` (create file if needed).
+- Append current UTC timestamp to `members/<member>/.run` and create the file if needed.
 - Load and follow `mission.md`.
 - Load and follow `guidelines.md` when it exists.
 - Load and follow `ROLE.md` exactly as written.
@@ -20,9 +24,9 @@ Use this file only for `execute` mode.
 
 ## Phase 1: Task Completion
 
-- List open tasks for active member.
+- List open tasks for the active member.
 - Prioritize `in_progress` tasks before starting new work.
-- If no task is `in_progress`, select highest-priority next task.
+- If no task is `in_progress`, select the highest-priority next task.
 - If tasks are tightly related, complete them together in one coherent effort.
 - Avoid executing unrelated tasks in a single round.
 - Minimize leftover `in_progress` tasks.
@@ -30,7 +34,7 @@ Use this file only for `execute` mode.
 
 ## Phase 2: Message Processing
 
-- List unarchived inbox messages for active member; process unread first.
+- List unarchived inbox messages for the active member and process unread first.
 - Read messages by `message_id`.
 - Complete quick actions immediately.
 - For non-quick actions, create concrete tasks and include source `message_id`.
@@ -52,7 +56,7 @@ Use this file only for `execute` mode.
 - Keep context as durable, high-fidelity memory rather than a chronological run log.
 - Move per-run summaries into `state/<member>-last-run.md` instead of `context/`.
 - Split or condense mixed-purpose context files when current work makes them stale or unwieldy.
-- Write short summary to `state/<member>-last-run.md` with timestamp, handled task IDs, and blockers or escalations.
+- Write a short summary to `state/<member>-last-run.md` with timestamp, handled task IDs, and blockers or escalations.
 
 ## Hard Constraints
 
@@ -62,7 +66,7 @@ Use this file only for `execute` mode.
 - Finish `in_progress` tasks before starting unrelated new work.
 - Keep actions mission-aligned.
 - Keep actions aligned with team guidelines when `guidelines.md` exists.
-- If mission and role conflict, escalate to CEO and mark selected task `blocked`.
-- If runtime CLI is unavailable, report blocker and never fabricate state.
-- Never read messages not addressed to active member.
+- If mission and role conflict, escalate to CEO and mark the selected task `blocked`.
+- If runtime CLI is unavailable, report the blocker and never fabricate state.
+- Never read messages not addressed to the active member.
 - Never modify task state for another member.
