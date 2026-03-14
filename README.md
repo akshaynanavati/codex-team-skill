@@ -402,7 +402,13 @@ python3 scripts/team_cli.py --base <dir> --team <team> task show --task-id <uuid
 python3 scripts/team_cli.py --base <dir> --team <team> task update-state --task-id <uuid> --state <state> [--reason '<reason>']
 ```
 
-Use `--json` on `team_cli.py` commands for machine-readable output while debugging.
+For `team_cli.py`, place `--json` before `init`, `message`, or `task` when you need machine-readable output, for example:
+
+```bash
+python3 scripts/team_cli.py --base <dir> --team <team> --json task list [--owner <member>] [--state open|all|todo|in_progress|blocked|done|cancelled]
+```
+
+`team_fs.py optimize/train` support `--json` on the subcommand itself as shown below. `team_fs.py create/recruit` do not support `--json`.
 
 Optimize snapshot:
 

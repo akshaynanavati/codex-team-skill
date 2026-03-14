@@ -17,4 +17,4 @@ python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>"
 
 ## Notes
 
-- Add top-level `--json` for machine-readable output when needed.
+- `team_fs.py recruit` does not support `--json`.

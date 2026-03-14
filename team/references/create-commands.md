@@ -24,4 +24,5 @@ python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" in
 
 ## Notes
 
-- Add top-level `--json` for machine-readable output when needed.
+- `team_fs.py create` does not support `--json`.
+- If you initialize the runtime DB and need machine-readable output, use `team_cli.py --json` before `init`.

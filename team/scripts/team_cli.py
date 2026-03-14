@@ -797,9 +797,19 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def normalize_global_flag_order(argv: list[str]) -> list[str]:
+    """Allow global flags like --json to appear after subcommands."""
+    if "--json" not in argv:
+        return argv
+
+    reordered = ["--json"]
+    reordered.extend(arg for arg in argv if arg != "--json")
+    return reordered
+
+
 def main() -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(normalize_global_flag_order(sys.argv[1:]))
 
     base = Path(args.base).resolve()
 

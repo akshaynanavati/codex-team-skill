@@ -45,4 +45,5 @@ python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" me
 ## Notes
 
 - Use only CLI-generated IDs; never fabricate UUIDs.
-- Use `--json` when the snapshot or runtime output needs machine-readable parsing.
+- For `team_fs.py optimize`, `--json` belongs at the end of the command as shown above.
+- For `team_cli.py` runtime commands, put `--json` before `task` or `message` when you need machine-readable output.

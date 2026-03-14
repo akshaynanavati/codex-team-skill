@@ -26,6 +26,7 @@ If intent is ambiguous, ask one clarifying question and stop.
 - Enforce member path format: `TEAM_<team-name>/members/<member-name>/`.
 - Reject names containing `/` or `\`.
 - Require names to match `^[A-Za-z0-9._-]+$`.
+- `team_cli.py` uses top-level `--json` before `init`, `message`, or `task`; `team_fs.py` uses `--json` only on `optimize` and `train`; `create` and `recruit` do not support `--json`.
 - Use scripts for deterministic writes and state transitions.
 - Do not hand-edit SQLite state when an equivalent CLI command exists.
 - Never run `team_ceo_cli.py` from an agent invocation; reserve it for human terminal usage.

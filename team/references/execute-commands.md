@@ -15,6 +15,12 @@ export TEAM_RUNTIME_CLI="$CODEX_HOME/skills/team/scripts/team_cli.py"
 python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" init
 ```
 
+If you need JSON from `team_cli.py`, place `--json` before `init`, `message`, or `task`:
+
+```bash
+python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" --json task list --owner "<member>"
+```
+
 ## Message Commands
 
 Send:
@@ -69,6 +75,6 @@ python3 "$TEAM_RUNTIME_CLI" --base "<directory>" --team "<team-name-or-path>" ta
 
 ## Notes
 
-- Add top-level `--json` for machine-readable output when needed.
+- For every `team_cli.py` command in this file, put `--json` before the subcommand (`init`, `message`, or `task`) when you need machine-readable output.
 - Require `--reason` when setting task state to `blocked`.
 - Use only CLI-generated IDs; never fabricate UUIDs.
