@@ -1,4 +1,4 @@
 interface:
   display_name: "Team"
-  short_description: "Create, update, and run mission-driven teams"
-  default_prompt: "Create, recruit, update the team run wrapper, or execute one team member work round."
+  short_description: "Create, train, optimize, and run mission-driven teams"
+  default_prompt: "Create a team, recruit a member, train one member by refining ROLE.md from task and message evidence, optimize one member's context, update the team run wrapper, or execute one team member work round."

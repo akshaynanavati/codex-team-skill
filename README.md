@@ -6,6 +6,8 @@ The Team skill lets you:
 
 - create a team workspace (`TEAM_<name>/`)
 - recruit members with role files and per-member context
+- train one member by refining `ROLE.md` from task and collaboration evidence
+- optimize one member's durable context so future runs load cleaner memory
 - run one or more member work rounds against a SQLite-backed inbox/task system
 
 The runtime is local-first: all state is stored in your team folder, and message/task records are managed through the bundled CLI.
@@ -13,6 +15,8 @@ The runtime is local-first: all state is stored in your team folder, and message
 ## What This Skill Provides
 
 - Deterministic workspace scaffolding for teams and members
+- Deterministic training snapshots for one member's role, tasks, and cross-member messages
+- Deterministic optimize snapshots for one member's role/context/runtime state
 - SQLite state store for messages and tasks
 - Strict inbox isolation by member identity
 - Team-local scheduler wrapper (`TEAM_<name>/run`) that triggers member runs from inbox/tasks
@@ -22,11 +26,11 @@ The runtime is local-first: all state is stored in your team folder, and message
 
 ```text
 team/
-├── SKILL.md                  # Agent instructions (create/recruit/execute modes)
+├── SKILL.md                  # Agent instructions (create/recruit/train/optimize/execute modes)
 ├── agents/
 │   └── openai.yaml           # UI metadata
 └── scripts/
-    ├── team_fs.py            # Team/member filesystem scaffolding CLI
+    ├── team_fs.py            # Team/member scaffolding + train/optimize snapshot CLI
     ├── team_cli.py           # SQLite messages/tasks CLI
     ├── team_ceo_cli.py       # Human CEO inbox/task console
     └── run.py                # Central scheduler script used by TEAM_<name>/run wrappers
@@ -70,7 +74,7 @@ After either install option, restart Codex so the skill is loaded or reloaded.
 
 Use Codex as the primary interface.
 
-- Preferred: ask Codex to `create`, `recruit`, or `execute` using the Team skill
+- Preferred: ask Codex to `create`, `recruit`, `train`, `optimize`, or `execute` using the Team skill
 - Secondary: run Python CLIs directly only for debugging, verification, or recovery
 
 In normal usage, you should not need to call the Python scripts manually.
@@ -110,7 +114,27 @@ This creates one folder per member:
 - `TEAM_demo/members/pm/ROLE.md`
 - `TEAM_demo/members/pm/context/`
 
-### 3) Execute Work Rounds (via Codex)
+### 3) Train One Member's Role (via Codex)
+
+Use this when a member's written role has drifted from the work they actually perform:
+
+```bash
+codex exec 'Use $team in train mode. Train member analyst in team demo by reviewing the current role, the member tasks, and messages with teammates, then rewrite ROLE.md to reflect the real responsibilities.'
+```
+
+Train mode updates `ROLE.md` from runtime evidence. It does not execute tasks or reply to messages.
+
+### 4) Optimize One Member's Context (via Codex)
+
+Use this when a member's `context/` has become noisy, oversized, or stale:
+
+```bash
+codex exec 'Use $team in optimize mode. Optimize member analyst in team demo by reviewing the role, current context, and same-member tasks/messages, then rewrite the context into concise high-fidelity files.'
+```
+
+Optimize mode does not execute tasks or reply to messages. It only cleans the active member's durable context.
+
+### 5) Execute Work Rounds (via Codex)
 
 Run one member round:
 
@@ -355,13 +379,27 @@ python3 scripts/team_cli.py --base <dir> --team <team> task update-state --task-
 
 Use `--json` on `team_cli.py` commands for machine-readable output while debugging.
 
+Optimize snapshot:
+
+```bash
+python3 scripts/team_fs.py --base <dir> optimize --team <team-name-or-path> --name <member-name> [--task-limit <n>] [--message-limit <n>] [--json]
+```
+
 ## Execution Model
 
-The skill defines three exclusive operating modes per run:
+The skill defines four exclusive operating modes per run:
 
 1. `create`
 2. `recruit`
-3. `execute`
+3. `optimize`
+4. `execute`
+
+When a member is optimized:
+
+- `ROLE.md` is treated as the source of truth for what durable context should exist
+- same-member tasks/messages can be inspected to judge whether context is still relevant
+- large or mixed-purpose context files should be split, condensed, or deleted
+- runtime task/message state should not be mutated unless explicitly requested
 
 When a member executes work:
 
@@ -383,5 +421,7 @@ When a member executes work:
 - Keep CLI examples in this README aligned with `scripts/* --help` output
 - Consider adding automated smoke tests for:
   - create/recruit scaffolding
+  - train snapshot flow
+  - optimize snapshot flow
   - `team_cli.py init/message/task` flows
   - runner `--dry-run` behavior

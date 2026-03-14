@@ -4,14 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import shlex
+import sqlite3
 import sys
 from pathlib import Path
+from typing import Any
 
 VALID_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 RUN_WRAPPER_FILENAME = "run"
 RUN_WRAPPER_CUSTOM_MARKER = "# TEAM_RUN_WRAPPER_CUSTOM_CHECKS"
+DB_FILENAME = "team_state.sqlite3"
+TASK_STATES = ("todo", "in_progress", "blocked", "done", "cancelled")
+MESSAGE_STATUSES = ("unread", "read", "archived")
+MESSAGE_DIRECTIONS = ("inbound", "outbound")
+OPTIMIZE_LARGE_FILE_BYTES = 8 * 1024
+OPTIMIZE_LARGE_FILE_LINES = 200
+TEXT_PREVIEW_WIDTH = 96
 
 
 def fail(message: str) -> int:
@@ -45,6 +55,38 @@ def guidelines_template(guidelines: str) -> str:
 def role_template(role: str) -> str:
     role_text = role.strip() or "TODO: define this member's role and constraints."
     return f"# Role\n{role_text}\n"
+
+
+def body_preview(text: str, width: int = TEXT_PREVIEW_WIDTH) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= width:
+        return cleaned
+    return f"{cleaned[: width - 3]}..."
+
+
+def summarize_text_file(
+    path: Path,
+    *,
+    ignored_values: set[str] | None = None,
+) -> tuple[int, str]:
+    line_count = 0
+    summary = ""
+    ignored = {value.strip().lower() for value in (ignored_values or set()) if value.strip()}
+
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line_count += 1
+            stripped = raw_line.strip()
+            if summary or not stripped:
+                continue
+            if stripped.startswith("#"):
+                stripped = stripped.lstrip("#").strip()
+            if stripped:
+                if stripped.lower() in ignored:
+                    continue
+                summary = stripped
+
+    return line_count, summary or "(empty)"
 
 
 def ceo_wrapper_template(team_root: Path) -> str:
@@ -206,6 +248,578 @@ def ensure_member_custom_run_check(team_root: Path, member: str, criteria: str) 
     print(f"[OK] added custom run check for member '{member_id}' in run wrapper: {run_path}")
 
 
+def resolve_member_dir(team_root: Path, member: str) -> Path:
+    members_dir = team_root / "members"
+    if not members_dir.exists() or not members_dir.is_dir():
+        raise FileNotFoundError(f"members directory not found: {members_dir}")
+
+    member_id = member_identity(member)
+    matches: list[Path] = []
+    for child in sorted(members_dir.iterdir(), key=lambda item: item.name.lower()):
+        if not child.is_dir():
+            continue
+        try:
+            child_id = member_identity(child.name)
+        except ValueError:
+            continue
+        if child_id == member_id:
+            matches.append(child.resolve())
+
+    if not matches:
+        raise FileNotFoundError(f"member directory not found: {members_dir / member}")
+    if len(matches) > 1:
+        joined = ", ".join(str(path) for path in matches)
+        raise ValueError(f"multiple member directories resolve to '{member_id}': {joined}")
+    return matches[0]
+
+
+def connect_runtime_db(team_root: Path) -> tuple[sqlite3.Connection | None, Path]:
+    db_path = team_root / "state" / DB_FILENAME
+    if not db_path.exists():
+        return None, db_path
+
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON;")
+    conn.execute("PRAGMA busy_timeout=30000;")
+    return conn, db_path
+
+
+def collect_context_files(context_dir: Path, team_root: Path) -> list[dict[str, Any]]:
+    if not context_dir.exists() or not context_dir.is_dir():
+        return []
+
+    records: list[dict[str, Any]] = []
+    for path in sorted(context_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        line_count, summary = summarize_text_file(path)
+        records.append(
+            {
+                "path": str(path.relative_to(team_root)),
+                "bytes": stat.st_size,
+                "lines": line_count,
+                "summary": body_preview(summary),
+                "needs_split": (
+                    stat.st_size >= OPTIMIZE_LARGE_FILE_BYTES
+                    or line_count >= OPTIMIZE_LARGE_FILE_LINES
+                ),
+            }
+        )
+
+    records.sort(key=lambda record: (-int(record["bytes"]), str(record["path"])))
+    return records
+
+
+def query_task_counts(conn: sqlite3.Connection, owner: str) -> dict[str, int]:
+    counts = {state: 0 for state in TASK_STATES}
+    rows = conn.execute(
+        """
+        SELECT state, COUNT(*) AS c
+        FROM tasks
+        WHERE owner = ?
+        GROUP BY state
+        """,
+        (owner,),
+    ).fetchall()
+    for row in rows:
+        counts[str(row["state"])] = int(row["c"])
+    return counts
+
+
+def query_recent_tasks(
+    conn: sqlite3.Connection,
+    owner: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT task_id, state, priority, created_at, updated_at, blocked_reason, body
+        FROM tasks
+        WHERE owner = ?
+        ORDER BY
+            CASE state
+                WHEN 'in_progress' THEN 0
+                WHEN 'todo' THEN 1
+                WHEN 'blocked' THEN 2
+                WHEN 'done' THEN 3
+                WHEN 'cancelled' THEN 4
+                ELSE 5
+            END,
+            updated_at DESC,
+            created_at DESC,
+            task_id ASC
+        LIMIT ?
+        """,
+        (owner, limit),
+    ).fetchall()
+    return [
+        {
+            "task_id": str(row["task_id"]),
+            "state": str(row["state"]),
+            "priority": int(row["priority"]),
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+            "blocked_reason": str(row["blocked_reason"] or ""),
+            "body_preview": body_preview(str(row["body"] or "")),
+        }
+        for row in rows
+    ]
+
+
+def query_message_counts(conn: sqlite3.Connection, member: str) -> dict[str, int]:
+    counts = {status: 0 for status in MESSAGE_STATUSES}
+    rows = conn.execute(
+        """
+        SELECT status, COUNT(*) AS c
+        FROM messages
+        WHERE receiver = ?
+        GROUP BY status
+        """,
+        (member,),
+    ).fetchall()
+    for row in rows:
+        counts[str(row["status"])] = int(row["c"])
+    return counts
+
+
+def query_recent_messages(
+    conn: sqlite3.Connection,
+    member: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT message_id, sender, subject, body, created_at, status, task_id
+        FROM messages
+        WHERE receiver = ?
+        ORDER BY
+            CASE status
+                WHEN 'unread' THEN 0
+                WHEN 'read' THEN 1
+                WHEN 'archived' THEN 2
+                ELSE 3
+            END,
+            created_at DESC,
+            message_id ASC
+        LIMIT ?
+        """,
+        (member, limit),
+    ).fetchall()
+    return [
+        {
+            "message_id": str(row["message_id"]),
+            "status": str(row["status"]),
+            "sender": str(row["sender"]),
+            "created_at": str(row["created_at"]),
+            "subject": str(row["subject"] or ""),
+            "task_id": str(row["task_id"] or ""),
+            "body_preview": body_preview(str(row["body"] or "")),
+        }
+        for row in rows
+    ]
+
+
+def query_training_task_summary(conn: sqlite3.Connection, owner: str) -> dict[str, Any]:
+    counts = query_task_counts(conn, owner)
+    rows = conn.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN state = 'done' THEN 1 ELSE 0 END), 0) AS done_total,
+            COALESCE(SUM(CASE WHEN state = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked_total,
+            COALESCE(MAX(updated_at), '') AS last_updated_at
+        FROM tasks
+        WHERE owner = ?
+        """,
+        (owner,),
+    ).fetchone()
+    assert rows is not None
+    return {
+        "counts": counts,
+        "total": int(rows["total"]),
+        "done_total": int(rows["done_total"]),
+        "blocked_total": int(rows["blocked_total"]),
+        "last_updated_at": str(rows["last_updated_at"] or ""),
+    }
+
+
+def query_cross_member_message_counts(conn: sqlite3.Connection, member: str) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN receiver = ? THEN 1 ELSE 0 END) AS inbound_total,
+            SUM(CASE WHEN sender = ? THEN 1 ELSE 0 END) AS outbound_total,
+            COUNT(*) AS total
+        FROM messages
+        WHERE (sender = ? OR receiver = ?)
+          AND sender != receiver
+        """,
+        (member, member, member, member),
+    ).fetchone()
+    assert rows is not None
+    return {
+        "inbound": int(rows["inbound_total"] or 0),
+        "outbound": int(rows["outbound_total"] or 0),
+        "total": int(rows["total"] or 0),
+    }
+
+
+def query_training_correspondents(
+    conn: sqlite3.Connection,
+    member: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+            CASE
+                WHEN sender = ? THEN receiver
+                ELSE sender
+            END AS counterpart,
+            COUNT(*) AS exchange_count,
+            COALESCE(SUM(CASE WHEN receiver = ? THEN 1 ELSE 0 END), 0) AS inbound_count,
+            COALESCE(SUM(CASE WHEN sender = ? THEN 1 ELSE 0 END), 0) AS outbound_count,
+            COALESCE(MAX(created_at), '') AS last_contact_at
+        FROM messages
+        WHERE (sender = ? OR receiver = ?)
+          AND sender != receiver
+        GROUP BY counterpart
+        ORDER BY exchange_count DESC, last_contact_at DESC, counterpart ASC
+        LIMIT ?
+        """,
+        (member, member, member, member, member, limit),
+    ).fetchall()
+    return [
+        {
+            "counterpart": str(row["counterpart"]),
+            "exchange_count": int(row["exchange_count"]),
+            "inbound_count": int(row["inbound_count"]),
+            "outbound_count": int(row["outbound_count"]),
+            "last_contact_at": str(row["last_contact_at"] or ""),
+        }
+        for row in rows
+    ]
+
+
+def query_training_messages(
+    conn: sqlite3.Connection,
+    member: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+            message_id,
+            sender,
+            receiver,
+            subject,
+            body,
+            created_at,
+            status,
+            task_id
+        FROM messages
+        WHERE (sender = ? OR receiver = ?)
+          AND sender != receiver
+        ORDER BY created_at DESC, message_id ASC
+        LIMIT ?
+        """,
+        (member, member, limit),
+    ).fetchall()
+    return [
+        {
+            "message_id": str(row["message_id"]),
+            "direction": "inbound" if str(row["receiver"]) == member else "outbound",
+            "counterpart": (
+                str(row["sender"]) if str(row["receiver"]) == member else str(row["receiver"])
+            ),
+            "status": str(row["status"]),
+            "created_at": str(row["created_at"]),
+            "subject": str(row["subject"] or ""),
+            "task_id": str(row["task_id"] or ""),
+            "body_preview": body_preview(str(row["body"] or "")),
+        }
+        for row in rows
+    ]
+
+
+def build_optimize_report(
+    team_root: Path,
+    member_dir: Path,
+    member: str,
+    *,
+    task_limit: int,
+    message_limit: int,
+) -> dict[str, Any]:
+    role_path = member_dir / "ROLE.md"
+    if not role_path.exists() or not role_path.is_file():
+        raise FileNotFoundError(f"member role not found: {role_path}")
+
+    role_lines, role_summary = summarize_text_file(role_path, ignored_values={"Role"})
+    context_dir = member_dir / "context"
+    context_files = collect_context_files(context_dir, team_root)
+
+    report: dict[str, Any] = {
+        "team_root": str(team_root),
+        "member": member,
+        "member_dir": str(member_dir),
+        "role": {
+            "path": str(role_path),
+            "lines": role_lines,
+            "summary": body_preview(role_summary),
+        },
+        "context": {
+            "path": str(context_dir),
+            "exists": context_dir.exists() and context_dir.is_dir(),
+            "file_count": len(context_files),
+            "total_bytes": sum(int(record["bytes"]) for record in context_files),
+            "total_lines": sum(int(record["lines"]) for record in context_files),
+            "oversized_threshold_bytes": OPTIMIZE_LARGE_FILE_BYTES,
+            "oversized_threshold_lines": OPTIMIZE_LARGE_FILE_LINES,
+            "oversized_files": [
+                record["path"] for record in context_files if bool(record["needs_split"])
+            ],
+            "files": context_files,
+        },
+        "runtime": {
+            "db_path": "",
+            "available": False,
+            "tasks": None,
+            "messages": None,
+        },
+    }
+
+    conn, db_path = connect_runtime_db(team_root)
+    report["runtime"]["db_path"] = str(db_path)
+    if conn is None:
+        return report
+
+    try:
+        report["runtime"]["available"] = True
+        report["runtime"]["tasks"] = {
+            "counts": query_task_counts(conn, member),
+            "recent": query_recent_tasks(conn, member, task_limit),
+        }
+        report["runtime"]["messages"] = {
+            "counts": query_message_counts(conn, member),
+            "recent": query_recent_messages(conn, member, message_limit),
+        }
+        return report
+    finally:
+        conn.close()
+
+
+def print_optimize_report(report: dict[str, Any]) -> None:
+    print(f"team_root: {report['team_root']}")
+    print(f"member: {report['member']}")
+    print(f"member_dir: {report['member_dir']}")
+
+    role = report["role"]
+    print(f"role_path: {role['path']}")
+    print(f"role_lines: {role['lines']}")
+    print(f"role_summary: {role['summary']}")
+
+    context = report["context"]
+    print(f"context_path: {context['path']}")
+    print(f"context_exists: {context['exists']}")
+    print(f"context_file_count: {context['file_count']}")
+    print(f"context_total_bytes: {context['total_bytes']}")
+    print(f"context_total_lines: {context['total_lines']}")
+    print(
+        "context_oversized_thresholds: "
+        f"{context['oversized_threshold_bytes']} bytes or "
+        f"{context['oversized_threshold_lines']} lines"
+    )
+    print("context_files:")
+    files = context["files"]
+    if not files:
+        print("  (none)")
+    for record in files:
+        marker = " split" if record["needs_split"] else ""
+        print(
+            f"  - {record['path']} | {record['bytes']} bytes | "
+            f"{record['lines']} lines{marker}"
+        )
+        print(f"    summary: {record['summary']}")
+
+    runtime = report["runtime"]
+    print(f"runtime_db_path: {runtime['db_path']}")
+    print(f"runtime_available: {runtime['available']}")
+    if not runtime["available"]:
+        return
+
+    tasks = runtime["tasks"]
+    assert tasks is not None
+    task_counts = tasks["counts"]
+    print(
+        "task_counts: "
+        + ", ".join(f"{state}={task_counts[state]}" for state in TASK_STATES)
+    )
+    print("recent_tasks:")
+    if not tasks["recent"]:
+        print("  (none)")
+    for record in tasks["recent"]:
+        suffix = ""
+        if record["blocked_reason"]:
+            suffix = f" | blocked_reason={record['blocked_reason']}"
+        print(
+            f"  - {record['task_id']} [{record['state']}] "
+            f"priority={record['priority']} updated_at={record['updated_at']}{suffix}"
+        )
+        print(f"    body: {record['body_preview']}")
+
+    messages = runtime["messages"]
+    assert messages is not None
+    message_counts = messages["counts"]
+    print(
+        "message_counts: "
+        + ", ".join(f"{status}={message_counts[status]}" for status in MESSAGE_STATUSES)
+    )
+    print("recent_messages:")
+    if not messages["recent"]:
+        print("  (none)")
+    for record in messages["recent"]:
+        task_suffix = f" task={record['task_id']}" if record["task_id"] else ""
+        subject = record["subject"] or "(no subject)"
+        print(
+            f"  - {record['message_id']} [{record['status']}] "
+            f"from={record['sender']} created_at={record['created_at']}{task_suffix}"
+        )
+        print(f"    subject: {body_preview(subject)}")
+        print(f"    body: {record['body_preview']}")
+
+
+def build_train_report(
+    team_root: Path,
+    member_dir: Path,
+    member: str,
+    *,
+    task_limit: int,
+    message_limit: int,
+    correspondent_limit: int,
+) -> dict[str, Any]:
+    role_path = member_dir / "ROLE.md"
+    if not role_path.exists() or not role_path.is_file():
+        raise FileNotFoundError(f"member role not found: {role_path}")
+
+    role_text = role_path.read_text(encoding="utf-8")
+    role_lines, role_summary = summarize_text_file(role_path, ignored_values={"Role"})
+
+    report: dict[str, Any] = {
+        "team_root": str(team_root),
+        "member": member,
+        "member_dir": str(member_dir),
+        "role": {
+            "path": str(role_path),
+            "lines": role_lines,
+            "summary": body_preview(role_summary),
+            "body": role_text,
+        },
+        "runtime": {
+            "db_path": "",
+            "available": False,
+            "tasks": None,
+            "messages": None,
+        },
+    }
+
+    conn, db_path = connect_runtime_db(team_root)
+    report["runtime"]["db_path"] = str(db_path)
+    if conn is None:
+        return report
+
+    try:
+        report["runtime"]["available"] = True
+        report["runtime"]["tasks"] = {
+            "summary": query_training_task_summary(conn, member),
+            "recent": query_recent_tasks(conn, member, task_limit),
+        }
+        report["runtime"]["messages"] = {
+            "summary": query_cross_member_message_counts(conn, member),
+            "correspondents": query_training_correspondents(conn, member, correspondent_limit),
+            "recent": query_training_messages(conn, member, message_limit),
+        }
+        return report
+    finally:
+        conn.close()
+
+
+def print_train_report(report: dict[str, Any]) -> None:
+    print(f"team_root: {report['team_root']}")
+    print(f"member: {report['member']}")
+    print(f"member_dir: {report['member_dir']}")
+
+    role = report["role"]
+    print(f"role_path: {role['path']}")
+    print(f"role_lines: {role['lines']}")
+    print(f"role_summary: {role['summary']}")
+    print("role_body:")
+    for line in str(role["body"]).splitlines():
+        print(f"  {line}")
+
+    runtime = report["runtime"]
+    print(f"runtime_db_path: {runtime['db_path']}")
+    print(f"runtime_available: {runtime['available']}")
+    if not runtime["available"]:
+        return
+
+    tasks = runtime["tasks"]
+    assert tasks is not None
+    task_summary = tasks["summary"]
+    task_counts = task_summary["counts"]
+    print(
+        "task_counts: "
+        + ", ".join(f"{state}={task_counts[state]}" for state in TASK_STATES)
+    )
+    print(f"task_total: {task_summary['total']}")
+    print(f"task_done_total: {task_summary['done_total']}")
+    print(f"task_blocked_total: {task_summary['blocked_total']}")
+    print(f"task_last_updated_at: {task_summary['last_updated_at']}")
+    print("recent_tasks:")
+    if not tasks["recent"]:
+        print("  (none)")
+    for record in tasks["recent"]:
+        suffix = ""
+        if record["blocked_reason"]:
+            suffix = f" | blocked_reason={record['blocked_reason']}"
+        print(
+            f"  - {record['task_id']} [{record['state']}] "
+            f"priority={record['priority']} updated_at={record['updated_at']}{suffix}"
+        )
+        print(f"    body: {record['body_preview']}")
+
+    messages = runtime["messages"]
+    assert messages is not None
+    message_summary = messages["summary"]
+    print(
+        "message_totals: "
+        + ", ".join(f"{direction}={message_summary[direction]}" for direction in MESSAGE_DIRECTIONS)
+        + f", total={message_summary['total']}"
+    )
+    print("top_correspondents:")
+    if not messages["correspondents"]:
+        print("  (none)")
+    for record in messages["correspondents"]:
+        print(
+            f"  - {record['counterpart']} | exchanges={record['exchange_count']} "
+            f"| inbound={record['inbound_count']} | outbound={record['outbound_count']} "
+            f"| last_contact_at={record['last_contact_at']}"
+        )
+    print("recent_cross_member_messages:")
+    if not messages["recent"]:
+        print("  (none)")
+    for record in messages["recent"]:
+        task_suffix = f" task={record['task_id']}" if record["task_id"] else ""
+        subject = record["subject"] or "(no subject)"
+        print(
+            f"  - {record['message_id']} [{record['direction']}] "
+            f"counterpart={record['counterpart']} created_at={record['created_at']}{task_suffix}"
+        )
+        print(f"    subject: {body_preview(subject)}")
+        print(f"    body: {record['body_preview']}")
+
+
 def resolve_team_root(team: str, base: Path) -> Path:
     team_path = Path(team)
 
@@ -214,6 +828,13 @@ def resolve_team_root(team: str, base: Path) -> Path:
 
     if len(team_path.parts) > 1 or team.startswith("."):
         return (base / team_path).resolve()
+
+    if team.startswith("TEAM_"):
+        team_name = team[len("TEAM_") :]
+        if not team_name:
+            raise ValueError("team value 'TEAM_' is invalid.")
+        ensure_name(team_name, "team name")
+        return (base / team).resolve()
 
     ensure_name(team, "team name")
     return (base / f"TEAM_{team}").resolve()
@@ -308,9 +929,68 @@ def cmd_recruit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_optimize(args: argparse.Namespace) -> int:
+    if args.task_limit <= 0:
+        return fail("--task-limit must be greater than 0.")
+    if args.message_limit <= 0:
+        return fail("--message-limit must be greater than 0.")
+
+    base = Path(args.base).resolve()
+    try:
+        team_root = resolve_team_root(args.team, base)
+        member_dir = resolve_member_dir(team_root, args.name)
+        member_name = member_identity(member_dir.name)
+        report = build_optimize_report(
+            team_root,
+            member_dir,
+            member_name,
+            task_limit=args.task_limit,
+            message_limit=args.message_limit,
+        )
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
+        return fail(str(exc))
+
+    if args.json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        print_optimize_report(report)
+    return 0
+
+
+def cmd_train(args: argparse.Namespace) -> int:
+    if args.task_limit <= 0:
+        return fail("--task-limit must be greater than 0.")
+    if args.message_limit <= 0:
+        return fail("--message-limit must be greater than 0.")
+    if args.correspondent_limit <= 0:
+        return fail("--correspondent-limit must be greater than 0.")
+
+    base = Path(args.base).resolve()
+    try:
+        team_root = resolve_team_root(args.team, base)
+        member_dir = resolve_member_dir(team_root, args.name)
+        member_name = member_identity(member_dir.name)
+        report = build_train_report(
+            team_root,
+            member_dir,
+            member_name,
+            task_limit=args.task_limit,
+            message_limit=args.message_limit,
+            correspondent_limit=args.correspondent_limit,
+        )
+    except (FileNotFoundError, OSError, ValueError, sqlite3.Error) as exc:
+        return fail(str(exc))
+
+    if args.json:
+        print(json.dumps(report, sort_keys=True))
+    else:
+        print_train_report(report)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Create teams and recruit team members for the team skill."
+        description="Create teams, recruit members, and inspect member state for optimization or training."
     )
     parser.add_argument(
         "--base",
@@ -387,6 +1067,70 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     recruit_parser.set_defaults(func=cmd_recruit)
+
+    optimize_parser = subparsers.add_parser(
+        "optimize",
+        help="Inspect one member's role, context, tasks, and messages for context cleanup.",
+    )
+    optimize_parser.add_argument(
+        "--team",
+        required=True,
+        help="Team name or team path. Name resolves to TEAM_<name> under --base.",
+    )
+    optimize_parser.add_argument("--name", required=True, help="Member name.")
+    optimize_parser.add_argument(
+        "--task-limit",
+        type=int,
+        default=15,
+        help="Maximum recent tasks to include (default: 15).",
+    )
+    optimize_parser.add_argument(
+        "--message-limit",
+        type=int,
+        default=15,
+        help="Maximum recent messages to include (default: 15).",
+    )
+    optimize_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON for the optimize snapshot.",
+    )
+    optimize_parser.set_defaults(func=cmd_optimize)
+
+    train_parser = subparsers.add_parser(
+        "train",
+        help="Inspect one member's role, tasks, and cross-member messages for role refinement.",
+    )
+    train_parser.add_argument(
+        "--team",
+        required=True,
+        help="Team name or team path. Name resolves to TEAM_<name> under --base.",
+    )
+    train_parser.add_argument("--name", required=True, help="Member name.")
+    train_parser.add_argument(
+        "--task-limit",
+        type=int,
+        default=20,
+        help="Maximum recent tasks to include (default: 20).",
+    )
+    train_parser.add_argument(
+        "--message-limit",
+        type=int,
+        default=25,
+        help="Maximum recent cross-member messages to include (default: 25).",
+    )
+    train_parser.add_argument(
+        "--correspondent-limit",
+        type=int,
+        default=10,
+        help="Maximum correspondents to summarize (default: 10).",
+    )
+    train_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON for the training snapshot.",
+    )
+    train_parser.set_defaults(func=cmd_train)
 
     return parser
 

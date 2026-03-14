@@ -7,6 +7,8 @@ Use this file after selecting a mode in `SKILL.md`.
 - Script environment setup
 - `create` mode commands
 - `recruit` mode commands
+- `optimize` mode commands
+- `train` mode commands
 - Runtime DB initialization
 - Runtime message commands
 - Runtime task commands
@@ -43,6 +45,26 @@ Recruit one member:
 ```bash
 python3 "$TEAM_FS_CLI" --base "<directory>" recruit --team "<team-name-or-path>" --name "<member-name>" --role "<role text>"
 ```
+
+## `optimize` mode commands
+
+Generate a member optimization snapshot before editing context:
+
+```bash
+python3 "$TEAM_FS_CLI" --base "<directory>" optimize --team "<team-name-or-path>" --name "<member-name>" [--task-limit <n>] [--message-limit <n>] [--json]
+```
+
+Use runtime CLI commands below to inspect a surfaced task or message by ID when needed.
+
+## `train` mode commands
+
+Generate a member training snapshot before rewriting `ROLE.md`:
+
+```bash
+python3 "$TEAM_FS_CLI" --base "<directory>" train --team "<team-name-or-path>" --name "<member-name>" [--task-limit <n>] [--message-limit <n>] [--correspondent-limit <n>] [--json]
+```
+
+Use runtime CLI commands below to inspect a surfaced task or message by ID when needed.
 
 ## Runtime DB initialization
 

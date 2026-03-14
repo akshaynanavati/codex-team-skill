@@ -49,6 +49,9 @@ Use this file only for `execute` mode.
 ## Phase 4: Close-out
 
 - Update and clean member context files.
+- Keep context as durable, high-fidelity memory rather than a chronological run log.
+- Move per-run summaries into `state/<member>-last-run.md` instead of `context/`.
+- Split or condense mixed-purpose context files when current work makes them stale or unwieldy.
 - Write short summary to `state/<member>-last-run.md` with timestamp, handled task IDs, and blockers or escalations.
 
 ## Hard Constraints

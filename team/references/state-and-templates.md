@@ -22,6 +22,12 @@ Optional scheduler control file:
 - `TEAM_<name>/members/<member-name>/ROLE.md`
 - `TEAM_<name>/members/<member-name>/context/`
 
+## Context expectations
+
+- `context/` stores durable, role-relevant memory that should help the member on future runs.
+- Prefer small topical files over one large catch-all note.
+- Do not use `context/` as an append-only run log; use `state/<member>-last-run.md` for per-run summaries.
+
 ## Runtime state location
 
 - SQLite path: `TEAM_<team-name>/state/team_state.sqlite3`
