@@ -931,6 +931,39 @@ def pause() -> None:
     input("\nPress Enter to continue...")
 
 
+def format_stop_file_menu_option(team_root: Path) -> str:
+    stop_path = runtime.stop_file_path(team_root)
+    if stop_path.exists():
+        return "Remove scheduler .stop file"
+    return "Create scheduler .stop file"
+
+
+def toggle_stop_file(team_root: Path) -> None:
+    stop_path = runtime.stop_file_path(team_root)
+
+    clear_screen()
+    print("Toggle Scheduler Stop File")
+    print(f"target: {stop_path}")
+
+    try:
+        if stop_path.exists():
+            if stop_path.is_dir():
+                print("\nCannot remove .stop because the target is a directory.")
+                pause()
+                return
+            stop_path.unlink()
+            print("\nRemoved .stop file.")
+            print("The run wrapper will continue until a new stop file is created.")
+        else:
+            stop_path.touch(exist_ok=True)
+            print("\nCreated .stop file.")
+            print("The run wrapper will exit cleanly at the start of the next round.")
+    except OSError as exc:
+        print(f"\nFailed to update .stop file: {exc}")
+
+    pause()
+
+
 def prompt_multiline(label: str) -> str:
     print(f"{label} (finish with a line containing only '.')")
     lines: list[str] = []
@@ -2265,6 +2298,7 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
         "View tasks table",
         "View messages table",
         "View CEO inbox",
+        format_stop_file_menu_option(team_root),
         "Send a message to a member",
         "Quit",
     ]
@@ -2300,6 +2334,9 @@ def screen_menu(conn: sqlite3.Connection, team_root: Path, db_path: Path) -> Scr
             ScreenEntry(SCREEN_MESSAGE_LIST, ("", "ceo", "inbox", "", DEFAULT_TABLE_LIMIT)),
         )
     if choice == 3:
+        toggle_stop_file(team_root)
+        return ScreenResult(ACTION_STAY)
+    if choice == 4:
         send_message_to_member(conn, team_root)
         return ScreenResult(ACTION_STAY)
     return ScreenResult(ACTION_QUIT)

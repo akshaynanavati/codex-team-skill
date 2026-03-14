@@ -19,9 +19,10 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping
 
+import team_cli as runtime
+
 VALID_MEMBER = re.compile(r"^[A-Za-z0-9._-]+$")
 DB_FILENAME = "team_state.sqlite3"
-STOP_FILENAME = ".stop"
 IDLE_RECHECK_SECONDS = 1.0
 REASONING_LEVELS = ("low", "medium", "high", "xhigh")
 RUN_MODES = ("execute", "train", "optimize")
@@ -567,7 +568,7 @@ def format_round_label(round_number: int, requested_rounds: int) -> str:
 
 
 def stop_file_path(team_root: Path) -> Path:
-    return team_root / STOP_FILENAME
+    return runtime.stop_file_path(team_root)
 
 
 def main() -> int:

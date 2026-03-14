@@ -198,9 +198,11 @@ When the CEO console opens, it provides:
 1. View tasks table
 2. View messages table
 3. View CEO inbox
-4. Respond to a message
+4. Create scheduler `.stop` file / remove it when already present
 5. Send a message to a member
 6. Quit
+
+Option `4` toggles `TEAM_<name>/.stop`, which is the same stop file checked by `TEAM_<name>/run`.
 
 Navigation controls:
 
@@ -234,7 +236,7 @@ Escalation flow:
 1. A member escalates by sending a message to receiver `ceo` (usually during execute mode when blocked/ambiguous).
 2. Before each scheduler round, unread CEO messages are checked.
 3. If unread CEO messages exist, scheduler pauses and prompts for human intervention by default.
-4. CEO uses `./TEAM_<name>/ceo` (options `3` and `4`) to review and respond.
+4. CEO uses `./TEAM_<name>/ceo` (option `3`) to review and respond.
 5. Once CEO unread count is cleared, scheduler can continue.
 
 Notes:

@@ -23,6 +23,7 @@ TASK_STATES = ("todo", "in_progress", "blocked", "done", "cancelled")
 TASK_LIST_SCOPES = ("open", "all", *TASK_STATES)
 
 DB_FILENAME = "team_state.sqlite3"
+STOP_FILENAME = ".stop"
 WRITE_RETRIES = 6
 RETRY_BASE_SLEEP_SECONDS = 0.05
 
@@ -134,6 +135,10 @@ def resolve_team_root(team: str, base: Path) -> Path:
 def ensure_team_root(team_root: Path) -> None:
     if not team_root.exists() or not team_root.is_dir():
         raise ValueError(f"team directory not found: {team_root}")
+
+
+def stop_file_path(team_root: Path) -> Path:
+    return team_root / STOP_FILENAME
 
 
 def ensure_database(team_root: Path) -> tuple[sqlite3.Connection, Path]:
