@@ -169,7 +169,7 @@ Useful options:
 Scheduler stop control:
 
 - Create `TEAM_<name>/.stop` to make `TEAM_<name>/run` exit cleanly at the start of the next round.
-- `--rounds -1` keeps the scheduler running until that `.stop` file appears.
+- `--rounds -1` keeps the scheduler running until that `.stop` file appears, or exits early when no members are eligible to run.
 
 ## CEO CLI (Human-Only)
 
